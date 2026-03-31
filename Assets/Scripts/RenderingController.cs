@@ -33,6 +33,18 @@ namespace RenderingSandbox
         [SerializeField, Range(0f, 0.98f)] private float historyWeight = 0.85f;
         [SerializeField, Range(0.01f, 0.2f)] private float historyWeightStep = 0.05f;
 
+        [Header("Motion Aware Temporal")]
+        [SerializeField] private float motionLowThreshold = 0.002f;
+        [SerializeField] private float motionHighThreshold = 0.03f;
+        [SerializeField] private float historyResetMotionThreshold = 0.08f;
+        [SerializeField] private float rotationContributionScale = 0.01f;
+
+        [Header("Auto Camera Motion")]
+        [SerializeField] private bool autoCameraMotionEnabled;
+        [SerializeField] private Vector3 autoMotionCenter = Vector3.zero;
+        [SerializeField] private float autoMotionAngleDegrees = 12f;
+        [SerializeField] private float autoMotionSpeed = 0.9f;
+
         private static readonly int SourceTextureId = Shader.PropertyToID("_SourceTexture");
         private static readonly int HistoryTextureId = Shader.PropertyToID("_HistoryTexture");
         private static readonly int SourceTexelSizeId = Shader.PropertyToID("_SourceTexelSize");
@@ -54,6 +66,14 @@ namespace RenderingSandbox
         private int originalCameraCullingMask;
         private bool hasHistoryFrame;
         private Coroutine historyUpdateCoroutine;
+        private float effectiveHistoryWeight;
+        private float cameraMotionAmount;
+        private Vector3 lastCameraPosition;
+        private Quaternion lastCameraRotation;
+        private Vector3 savedManualCameraPosition;
+        private Quaternion savedManualCameraRotation;
+        private Vector3 autoMotionBaseOffset;
+        private bool autoMotionPoseInitialized;
 
         private RenderingMode currentMode;
         private UpscaleMode currentUpscaleMode;
@@ -65,7 +85,10 @@ namespace RenderingSandbox
         public RenderingMode CurrentMode => currentMode;
         public UpscaleMode CurrentUpscaleMode => currentUpscaleMode;
         public bool TemporalAccumulationEnabled => temporalAccumulationEnabled;
+        public bool AutoCameraMotionEnabled => autoCameraMotionEnabled;
         public float HistoryWeight => historyWeight;
+        public float EffectiveHistoryWeight => effectiveHistoryWeight;
+        public float CameraMotionAmount => cameraMotionAmount;
         public int RenderWidth => currentMode == RenderingMode.Native ? Screen.width : currentRenderWidth;
         public int RenderHeight => currentMode == RenderingMode.Native ? Screen.height : currentRenderHeight;
         public int ScreenWidth => Screen.width;
@@ -94,6 +117,9 @@ namespace RenderingSandbox
             EnsurePresentationMaterial();
             EnsurePresentationObjects();
             EnsureOverlayExists();
+            lastCameraPosition = targetCamera.transform.position;
+            lastCameraRotation = targetCamera.transform.rotation;
+            effectiveHistoryWeight = historyWeight;
             SetUpscaleMode(startingUpscaleMode, true);
             SetRenderingMode(startingMode, true);
         }
@@ -109,12 +135,18 @@ namespace RenderingSandbox
         private void Update()
         {
             HandleModeInput();
+            UpdateAutoCameraMotion();
 
             if (Screen.width != lastScreenWidth || Screen.height != lastScreenHeight)
             {
                 UpdatePresentationQuadScale();
                 ApplyCurrentMode(forceRecreateTexture: true);
             }
+        }
+
+        private void LateUpdate()
+        {
+            UpdateCameraMotionState();
         }
 
         private void OnDisable()
@@ -227,6 +259,7 @@ namespace RenderingSandbox
             {
                 temporalAccumulationEnabled = !temporalAccumulationEnabled;
                 ResetHistory();
+                UpdateEffectiveHistoryWeight();
                 UpdatePresentationMaterial();
                 debugOverlay.Refresh();
             }
@@ -235,6 +268,7 @@ namespace RenderingSandbox
             {
                 historyWeight = Mathf.Clamp(historyWeight - historyWeightStep, 0f, 0.98f);
                 ResetHistory();
+                UpdateEffectiveHistoryWeight();
                 UpdatePresentationMaterial();
                 debugOverlay.Refresh();
             }
@@ -242,8 +276,14 @@ namespace RenderingSandbox
             {
                 historyWeight = Mathf.Clamp(historyWeight + historyWeightStep, 0f, 0.98f);
                 ResetHistory();
+                UpdateEffectiveHistoryWeight();
                 UpdatePresentationMaterial();
                 debugOverlay.Refresh();
+            }
+
+            if (keyboard.yKey.wasPressedThisFrame)
+            {
+                ToggleAutoCameraMotion();
             }
         }
 
@@ -379,6 +419,7 @@ namespace RenderingSandbox
             }
 
             ResetHistory();
+            UpdateEffectiveHistoryWeight();
             UpdatePresentationMaterial();
             ReleaseRenderTexture();
         }
@@ -423,7 +464,7 @@ namespace RenderingSandbox
                 upscaleMaterial.SetFloat(SharpenStrengthId, 0f);
                 upscaleMaterial.SetFloat(TemporalEnabledId, 0f);
                 upscaleMaterial.SetFloat(HasHistoryId, 0f);
-                upscaleMaterial.SetFloat(HistoryWeightId, historyWeight);
+                upscaleMaterial.SetFloat(HistoryWeightId, effectiveHistoryWeight);
                 return;
             }
 
@@ -442,7 +483,7 @@ namespace RenderingSandbox
             upscaleMaterial.SetFloat(SharpenStrengthId, currentUpscaleMode == UpscaleMode.SharpenedBilinear ? sharpenStrength : 0f);
             upscaleMaterial.SetFloat(TemporalEnabledId, temporalAccumulationEnabled ? 1f : 0f);
             upscaleMaterial.SetFloat(HasHistoryId, hasHistoryFrame ? 1f : 0f);
-            upscaleMaterial.SetFloat(HistoryWeightId, historyWeight);
+            upscaleMaterial.SetFloat(HistoryWeightId, effectiveHistoryWeight);
         }
 
         private void EnsureHistoryTextures(int width, int height)
@@ -496,6 +537,85 @@ namespace RenderingSandbox
             hasHistoryFrame = false;
             ClearTexture(historyReadTexture);
             ClearTexture(historyWriteTexture);
+        }
+
+        private void ToggleAutoCameraMotion()
+        {
+            autoCameraMotionEnabled = !autoCameraMotionEnabled;
+
+            if (autoCameraMotionEnabled)
+            {
+                savedManualCameraPosition = targetCamera.transform.position;
+                savedManualCameraRotation = targetCamera.transform.rotation;
+                autoMotionBaseOffset = savedManualCameraPosition - autoMotionCenter;
+                autoMotionPoseInitialized = true;
+            }
+            else if (autoMotionPoseInitialized)
+            {
+                targetCamera.transform.SetPositionAndRotation(savedManualCameraPosition, savedManualCameraRotation);
+            }
+
+            lastCameraPosition = targetCamera.transform.position;
+            lastCameraRotation = targetCamera.transform.rotation;
+            ResetHistory();
+            UpdateEffectiveHistoryWeight();
+            UpdatePresentationMaterial();
+            debugOverlay.Refresh();
+        }
+
+        private void UpdateAutoCameraMotion()
+        {
+            if (!autoCameraMotionEnabled || !autoMotionPoseInitialized)
+            {
+                return;
+            }
+
+            // Auto camera motion provides a repeatable way to expose temporal artifacts without
+            // needing manual input every time. It gently swings the camera around the scene center.
+            float orbitAngle = Mathf.Sin(Time.time * autoMotionSpeed) * autoMotionAngleDegrees;
+            Quaternion orbitRotation = Quaternion.AngleAxis(orbitAngle, Vector3.up);
+            Vector3 orbitOffset = orbitRotation * autoMotionBaseOffset;
+            Vector3 newPosition = autoMotionCenter + orbitOffset;
+            Quaternion newRotation = Quaternion.LookRotation((autoMotionCenter - newPosition).normalized, Vector3.up);
+            targetCamera.transform.SetPositionAndRotation(newPosition, newRotation);
+        }
+
+        private void UpdateCameraMotionState()
+        {
+            Vector3 currentPosition = targetCamera.transform.position;
+            Quaternion currentRotation = targetCamera.transform.rotation;
+
+            float positionDelta = Vector3.Distance(currentPosition, lastCameraPosition);
+            float rotationDelta = Quaternion.Angle(currentRotation, lastCameraRotation) * rotationContributionScale;
+            cameraMotionAmount = positionDelta + rotationDelta;
+
+            // Naive temporal accumulation ghosts because it keeps trusting old pixels even when
+            // the camera moved and those pixels no longer line up. Motion-aware weighting is a
+            // simple first step toward the role motion vectors and reprojection play in TAA-like systems.
+            if (cameraMotionAmount > historyResetMotionThreshold && hasHistoryFrame)
+            {
+                ResetHistory();
+            }
+
+            UpdateEffectiveHistoryWeight();
+            UpdatePresentationMaterial();
+
+            lastCameraPosition = currentPosition;
+            lastCameraRotation = currentRotation;
+        }
+
+        private void UpdateEffectiveHistoryWeight()
+        {
+            if (!temporalAccumulationEnabled)
+            {
+                effectiveHistoryWeight = 0f;
+                return;
+            }
+
+            // The manual history weight is the maximum trust in old frames. As camera motion
+            // increases, that trust falls off toward zero so history contributes less.
+            float motionFactor = Mathf.InverseLerp(motionLowThreshold, motionHighThreshold, cameraMotionAmount);
+            effectiveHistoryWeight = historyWeight * (1f - motionFactor);
         }
 
         private void ReleaseTexture(ref RenderTexture texture)
@@ -596,7 +716,7 @@ namespace RenderingSandbox
             debugRect.anchorMax = new Vector2(0f, 1f);
             debugRect.pivot = new Vector2(0f, 1f);
             debugRect.anchoredPosition = new Vector2(16f, -16f);
-            debugRect.sizeDelta = new Vector2(420f, 120f);
+            debugRect.sizeDelta = new Vector2(520f, 180f);
 
             Text debugText = debugObject.GetComponent<Text>();
             if (debugText == null)

@@ -84,8 +84,8 @@ Shader "Hidden/RenderingSandbox/UpscalePresent"
                 }
 
                 // Temporal accumulation blends the current frame with history from earlier
-                // frames. That can stabilize flicker when the camera is still, but without
-                // motion-aware reprojection the old image no longer lines up during movement.
+                // frames. The controller now sends an effective history weight that drops as
+                // camera motion rises, which makes history less dominant during movement.
                 float4 history = tex2D(_HistoryTexture, uv);
                 return lerp(currentFrame, history, _HistoryWeight);
             }

@@ -31,10 +31,13 @@ namespace RenderingSandbox
                 $"Render Scale: {GetRenderModeName(controller.CurrentMode)}\n" +
                 $"Upscale: {GetUpscaleModeName(controller.CurrentUpscaleMode)}\n" +
                 $"Temporal: {(controller.TemporalAccumulationEnabled ? "On" : "Off")}\n" +
-                $"History Weight: {controller.HistoryWeight:0.00}\n" +
+                $"Base History Weight: {controller.HistoryWeight:0.00}\n" +
+                $"Effective History Weight: {controller.EffectiveHistoryWeight:0.00}\n" +
+                $"Camera Motion: {controller.CameraMotionAmount:0.000}\n" +
+                $"Auto Motion: {(controller.AutoCameraMotionEnabled ? "On" : "Off")}\n" +
                 $"Render Resolution: {controller.RenderWidth}x{controller.RenderHeight}\n" +
                 $"Screen Resolution: {controller.ScreenWidth}x{controller.ScreenHeight}\n" +
-                "Keys: 1/2/3 Scale | Q/W/E Upscale | T Temporal | [ ] Weight";
+                "Keys: 1/2/3 Scale | Q/W/E Upscale | T Temporal | [ ] Weight | Y Auto Motion";
         }
 
         private static string GetRenderModeName(RenderingController.RenderingMode mode)
