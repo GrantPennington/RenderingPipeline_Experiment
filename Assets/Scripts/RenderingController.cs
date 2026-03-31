@@ -1,6 +1,7 @@
 using UnityEngine;
 using UnityEngine.InputSystem;
 using UnityEngine.UI;
+using System.Collections;
 
 namespace RenderingSandbox
 {
@@ -28,20 +29,31 @@ namespace RenderingSandbox
         [Header("Presentation")]
         [SerializeField] private Shader upscaleShader;
         [SerializeField, Range(0f, 1.5f)] private float sharpenStrength = 0.35f;
+        [SerializeField] private bool temporalAccumulationEnabled;
+        [SerializeField, Range(0f, 0.98f)] private float historyWeight = 0.85f;
+        [SerializeField, Range(0.01f, 0.2f)] private float historyWeightStep = 0.05f;
 
         private static readonly int SourceTextureId = Shader.PropertyToID("_SourceTexture");
+        private static readonly int HistoryTextureId = Shader.PropertyToID("_HistoryTexture");
         private static readonly int SourceTexelSizeId = Shader.PropertyToID("_SourceTexelSize");
         private static readonly int SharpenStrengthId = Shader.PropertyToID("_SharpenStrength");
+        private static readonly int TemporalEnabledId = Shader.PropertyToID("_TemporalEnabled");
+        private static readonly int HasHistoryId = Shader.PropertyToID("_HasHistory");
+        private static readonly int HistoryWeightId = Shader.PropertyToID("_HistoryWeight");
         private const int PresentationLayer = 31;
 
         private Camera targetCamera;
         private RenderTexture lowResolutionTexture;
+        private RenderTexture historyReadTexture;
+        private RenderTexture historyWriteTexture;
         private Camera presentationCamera;
         private Transform presentationQuad;
         private Canvas overlayCanvas;
         private RenderingDebugOverlay debugOverlay;
         private Material upscaleMaterial;
         private int originalCameraCullingMask;
+        private bool hasHistoryFrame;
+        private Coroutine historyUpdateCoroutine;
 
         private RenderingMode currentMode;
         private UpscaleMode currentUpscaleMode;
@@ -52,6 +64,8 @@ namespace RenderingSandbox
 
         public RenderingMode CurrentMode => currentMode;
         public UpscaleMode CurrentUpscaleMode => currentUpscaleMode;
+        public bool TemporalAccumulationEnabled => temporalAccumulationEnabled;
+        public float HistoryWeight => historyWeight;
         public int RenderWidth => currentMode == RenderingMode.Native ? Screen.width : currentRenderWidth;
         public int RenderHeight => currentMode == RenderingMode.Native ? Screen.height : currentRenderHeight;
         public int ScreenWidth => Screen.width;
@@ -84,6 +98,14 @@ namespace RenderingSandbox
             SetRenderingMode(startingMode, true);
         }
 
+        private void OnEnable()
+        {
+            if (historyUpdateCoroutine == null)
+            {
+                historyUpdateCoroutine = StartCoroutine(UpdateHistoryAtEndOfFrame());
+            }
+        }
+
         private void Update()
         {
             HandleModeInput();
@@ -97,6 +119,12 @@ namespace RenderingSandbox
 
         private void OnDisable()
         {
+            if (historyUpdateCoroutine != null)
+            {
+                StopCoroutine(historyUpdateCoroutine);
+                historyUpdateCoroutine = null;
+            }
+
             targetCamera.cullingMask = originalCameraCullingMask;
             ResetToNativeOutput();
         }
@@ -104,6 +132,7 @@ namespace RenderingSandbox
         private void OnDestroy()
         {
             ReleaseRenderTexture();
+            ReleaseHistoryTextures();
 
             if (overlayCanvas != null)
             {
@@ -129,6 +158,7 @@ namespace RenderingSandbox
             }
 
             currentMode = mode;
+            ResetHistory();
             ApplyCurrentMode(forceApply);
         }
 
@@ -145,6 +175,8 @@ namespace RenderingSandbox
             {
                 ApplySamplingState();
             }
+
+            ResetHistory();
 
             // Upscale mode changes affect both the RenderTexture filter and the presentation
             // material. This is where the runtime switch between nearest, bilinear, and
@@ -190,6 +222,29 @@ namespace RenderingSandbox
             {
                 SetUpscaleMode(UpscaleMode.SharpenedBilinear);
             }
+
+            if (keyboard.tKey.wasPressedThisFrame)
+            {
+                temporalAccumulationEnabled = !temporalAccumulationEnabled;
+                ResetHistory();
+                UpdatePresentationMaterial();
+                debugOverlay.Refresh();
+            }
+
+            if (keyboard.leftBracketKey.wasPressedThisFrame)
+            {
+                historyWeight = Mathf.Clamp(historyWeight - historyWeightStep, 0f, 0.98f);
+                ResetHistory();
+                UpdatePresentationMaterial();
+                debugOverlay.Refresh();
+            }
+            else if (keyboard.rightBracketKey.wasPressedThisFrame)
+            {
+                historyWeight = Mathf.Clamp(historyWeight + historyWeightStep, 0f, 0.98f);
+                ResetHistory();
+                UpdatePresentationMaterial();
+                debugOverlay.Refresh();
+            }
         }
 
         private void ApplyCurrentMode(bool forceRecreateTexture = false)
@@ -221,6 +276,8 @@ namespace RenderingSandbox
                 // the old RenderTexture is released and a correctly sized one is created.
                 CreateLowResolutionTexture(desiredWidth, desiredHeight);
             }
+
+            EnsureHistoryTextures(Screen.width, Screen.height);
 
             // A RenderTexture is an off-screen color buffer. The scene camera writes into this
             // smaller image first so we can control how it is sampled when it is enlarged later.
@@ -267,6 +324,7 @@ namespace RenderingSandbox
 
             ApplySamplingState();
             lowResolutionTexture.Create();
+            ResetHistory();
             UpdatePresentationMaterial();
         }
 
@@ -320,6 +378,7 @@ namespace RenderingSandbox
                 presentationCamera.enabled = false;
             }
 
+            ResetHistory();
             UpdatePresentationMaterial();
             ReleaseRenderTexture();
         }
@@ -359,12 +418,20 @@ namespace RenderingSandbox
             if (lowResolutionTexture == null)
             {
                 upscaleMaterial.SetTexture(SourceTextureId, Texture2D.blackTexture);
+                upscaleMaterial.SetTexture(HistoryTextureId, Texture2D.blackTexture);
                 upscaleMaterial.SetVector(SourceTexelSizeId, Vector4.zero);
                 upscaleMaterial.SetFloat(SharpenStrengthId, 0f);
+                upscaleMaterial.SetFloat(TemporalEnabledId, 0f);
+                upscaleMaterial.SetFloat(HasHistoryId, 0f);
+                upscaleMaterial.SetFloat(HistoryWeightId, historyWeight);
                 return;
             }
 
+            // The fullscreen presentation material reads the current low-res render target,
+            // optionally mixes it with a history buffer, and outputs the final image that the
+            // presentation camera shows on screen.
             upscaleMaterial.SetTexture(SourceTextureId, lowResolutionTexture);
+            upscaleMaterial.SetTexture(HistoryTextureId, historyReadTexture != null ? historyReadTexture : Texture2D.blackTexture);
             upscaleMaterial.SetVector(
                 SourceTexelSizeId,
                 new Vector4(
@@ -373,6 +440,116 @@ namespace RenderingSandbox
                     lowResolutionTexture.width,
                     lowResolutionTexture.height));
             upscaleMaterial.SetFloat(SharpenStrengthId, currentUpscaleMode == UpscaleMode.SharpenedBilinear ? sharpenStrength : 0f);
+            upscaleMaterial.SetFloat(TemporalEnabledId, temporalAccumulationEnabled ? 1f : 0f);
+            upscaleMaterial.SetFloat(HasHistoryId, hasHistoryFrame ? 1f : 0f);
+            upscaleMaterial.SetFloat(HistoryWeightId, historyWeight);
+        }
+
+        private void EnsureHistoryTextures(int width, int height)
+        {
+            bool needsNewTextures =
+                historyReadTexture == null ||
+                historyWriteTexture == null ||
+                !historyReadTexture.IsCreated() ||
+                !historyWriteTexture.IsCreated() ||
+                historyReadTexture.width != width ||
+                historyReadTexture.height != height;
+
+            if (!needsNewTextures)
+            {
+                return;
+            }
+
+            ReleaseHistoryTextures();
+
+            // A history buffer stores the previously presented image. Temporal techniques use
+            // that old data to stabilize noise and recover detail over time.
+            historyReadTexture = CreateHistoryTexture(width, height, "HistoryRead");
+            historyWriteTexture = CreateHistoryTexture(width, height, "HistoryWrite");
+            ResetHistory();
+        }
+
+        private RenderTexture CreateHistoryTexture(int width, int height, string textureName)
+        {
+            RenderTexture texture = new RenderTexture(width, height, 0, RenderTextureFormat.ARGB32)
+            {
+                name = textureName,
+                filterMode = FilterMode.Bilinear,
+                wrapMode = TextureWrapMode.Clamp,
+                useMipMap = false,
+                autoGenerateMips = false
+            };
+
+            texture.Create();
+            return texture;
+        }
+
+        private void ReleaseHistoryTextures()
+        {
+            ReleaseTexture(ref historyReadTexture);
+            ReleaseTexture(ref historyWriteTexture);
+            hasHistoryFrame = false;
+        }
+
+        private void ResetHistory()
+        {
+            hasHistoryFrame = false;
+            ClearTexture(historyReadTexture);
+            ClearTexture(historyWriteTexture);
+        }
+
+        private void ReleaseTexture(ref RenderTexture texture)
+        {
+            if (texture == null)
+            {
+                return;
+            }
+
+            texture.Release();
+            Destroy(texture);
+            texture = null;
+        }
+
+        private void ClearTexture(RenderTexture texture)
+        {
+            if (texture == null)
+            {
+                return;
+            }
+
+            RenderTexture previous = RenderTexture.active;
+            RenderTexture.active = texture;
+            GL.Clear(false, true, Color.black);
+            RenderTexture.active = previous;
+        }
+
+        private IEnumerator UpdateHistoryAtEndOfFrame()
+        {
+            while (true)
+            {
+                yield return new WaitForEndOfFrame();
+
+                if (!temporalAccumulationEnabled || currentMode == RenderingMode.Native || lowResolutionTexture == null || historyWriteTexture == null || upscaleMaterial == null)
+                {
+                    continue;
+                }
+
+                // Naive temporal accumulation works by blending the current frame with a stored
+                // history buffer, then saving that blended result for the next frame. This can
+                // stabilize shimmering when the camera is still, but without motion vectors or
+                // reprojection it will smear and ghost as soon as the scene moves.
+                UpdatePresentationMaterial();
+                Graphics.Blit(Texture2D.blackTexture, historyWriteTexture, upscaleMaterial);
+                SwapHistoryTextures();
+                hasHistoryFrame = true;
+            }
+        }
+
+        private void SwapHistoryTextures()
+        {
+            RenderTexture previousRead = historyReadTexture;
+            historyReadTexture = historyWriteTexture;
+            historyWriteTexture = previousRead;
         }
 
         private void EnsureOverlayExists()

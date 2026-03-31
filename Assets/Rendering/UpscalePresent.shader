@@ -3,7 +3,9 @@ Shader "Hidden/RenderingSandbox/UpscalePresent"
     Properties
     {
         _SourceTexture("Source Texture", 2D) = "white" {}
+        _HistoryTexture("History Texture", 2D) = "black" {}
         _SharpenStrength("Sharpen Strength", Range(0, 1.5)) = 0
+        _HistoryWeight("History Weight", Range(0, 0.98)) = 0.85
     }
 
     SubShader
@@ -33,9 +35,13 @@ Shader "Hidden/RenderingSandbox/UpscalePresent"
             };
 
             sampler2D _SourceTexture;
+            sampler2D _HistoryTexture;
 
             float4 _SourceTexelSize;
             float _SharpenStrength;
+            float _TemporalEnabled;
+            float _HasHistory;
+            float _HistoryWeight;
 
             Varyings Vert(Attributes input)
             {
@@ -56,22 +62,32 @@ Shader "Hidden/RenderingSandbox/UpscalePresent"
                 // Point sampling returns one texel, while bilinear sampling blends nearby texels.
                 float4 center = tex2D(_SourceTexture, uv);
 
+                float4 currentFrame = center;
+
                 // Sharpening adds back local contrast after bilinear smoothing. It can make
                 // edges feel more detailed, but too much sharpening also creates halos.
-                if (_SharpenStrength <= 0.0001)
+                if (_SharpenStrength > 0.0001)
                 {
-                    return center;
+                    float2 texel = _SourceTexelSize.xy;
+                    float4 left = tex2D(_SourceTexture, uv + float2(-texel.x, 0));
+                    float4 right = tex2D(_SourceTexture, uv + float2(texel.x, 0));
+                    float4 up = tex2D(_SourceTexture, uv + float2(0, texel.y));
+                    float4 down = tex2D(_SourceTexture, uv + float2(0, -texel.y));
+
+                    float4 blurred = (center + left + right + up + down) * 0.2;
+                    currentFrame = saturate(center + (center - blurred) * _SharpenStrength);
                 }
 
-                float2 texel = _SourceTexelSize.xy;
-                float4 left = tex2D(_SourceTexture, uv + float2(-texel.x, 0));
-                float4 right = tex2D(_SourceTexture, uv + float2(texel.x, 0));
-                float4 up = tex2D(_SourceTexture, uv + float2(0, texel.y));
-                float4 down = tex2D(_SourceTexture, uv + float2(0, -texel.y));
+                if (_TemporalEnabled <= 0.5 || _HasHistory <= 0.5)
+                {
+                    return currentFrame;
+                }
 
-                float4 blurred = (center + left + right + up + down) * 0.2;
-                float4 sharpened = center + (center - blurred) * _SharpenStrength;
-                return saturate(sharpened);
+                // Temporal accumulation blends the current frame with history from earlier
+                // frames. That can stabilize flicker when the camera is still, but without
+                // motion-aware reprojection the old image no longer lines up during movement.
+                float4 history = tex2D(_HistoryTexture, uv);
+                return lerp(currentFrame, history, _HistoryWeight);
             }
             ENDHLSL
         }

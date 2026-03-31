@@ -30,9 +30,11 @@ namespace RenderingSandbox
             label.text =
                 $"Render Scale: {GetRenderModeName(controller.CurrentMode)}\n" +
                 $"Upscale: {GetUpscaleModeName(controller.CurrentUpscaleMode)}\n" +
+                $"Temporal: {(controller.TemporalAccumulationEnabled ? "On" : "Off")}\n" +
+                $"History Weight: {controller.HistoryWeight:0.00}\n" +
                 $"Render Resolution: {controller.RenderWidth}x{controller.RenderHeight}\n" +
                 $"Screen Resolution: {controller.ScreenWidth}x{controller.ScreenHeight}\n" +
-                "Keys: 1/2/3 Scale | Q/W/E Upscale";
+                "Keys: 1/2/3 Scale | Q/W/E Upscale | T Temporal | [ ] Weight";
         }
 
         private static string GetRenderModeName(RenderingController.RenderingMode mode)
