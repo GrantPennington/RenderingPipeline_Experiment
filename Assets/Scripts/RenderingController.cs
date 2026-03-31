@@ -22,6 +22,17 @@ namespace RenderingSandbox
             SharpenedBilinear
         }
 
+        public enum TestingPreset
+        {
+            Custom,
+            Baseline,
+            NaiveTemporal,
+            MotionAwareTemporal,
+            SimpleReprojection,
+            MatrixReprojection,
+            JitteredTemporal
+        }
+
         [Header("Startup")]
         [SerializeField] private RenderingMode startingMode = RenderingMode.Native;
         [SerializeField] private UpscaleMode startingUpscaleMode = UpscaleMode.Bilinear;
@@ -99,6 +110,7 @@ namespace RenderingSandbox
         private int jitterFrameIndex;
         private Vector2 currentJitterOffsetPixels;
         private Matrix4x4 baseProjectionMatrix;
+        private TestingPreset currentPreset = TestingPreset.Custom;
 
         private RenderingMode currentMode;
         private UpscaleMode currentUpscaleMode;
@@ -114,6 +126,7 @@ namespace RenderingSandbox
         public bool MatrixReprojectionEnabled => matrixReprojectionEnabled;
         public bool JitterEnabled => jitterEnabled;
         public bool AutoCameraMotionEnabled => autoCameraMotionEnabled;
+        public string CurrentPresetName => GetPresetLabel(currentPreset);
         public float HistoryWeight => historyWeight;
         public float EffectiveHistoryWeight => effectiveHistoryWeight;
         public float CameraMotionAmount => cameraMotionAmount;
@@ -276,27 +289,33 @@ namespace RenderingSandbox
             if (keyboard.digit1Key.wasPressedThisFrame || keyboard.numpad1Key.wasPressedThisFrame)
             {
                 SetRenderingMode(RenderingMode.Native);
+                MarkPresetCustom();
             }
             else if (keyboard.digit2Key.wasPressedThisFrame || keyboard.numpad2Key.wasPressedThisFrame)
             {
                 SetRenderingMode(RenderingMode.HalfResolution);
+                MarkPresetCustom();
             }
             else if (keyboard.digit3Key.wasPressedThisFrame || keyboard.numpad3Key.wasPressedThisFrame)
             {
                 SetRenderingMode(RenderingMode.QuarterResolution);
+                MarkPresetCustom();
             }
 
             if (keyboard.qKey.wasPressedThisFrame)
             {
                 SetUpscaleMode(UpscaleMode.NearestNeighbor);
+                MarkPresetCustom();
             }
             else if (keyboard.wKey.wasPressedThisFrame)
             {
                 SetUpscaleMode(UpscaleMode.Bilinear);
+                MarkPresetCustom();
             }
             else if (keyboard.eKey.wasPressedThisFrame)
             {
                 SetUpscaleMode(UpscaleMode.SharpenedBilinear);
+                MarkPresetCustom();
             }
 
             if (keyboard.tKey.wasPressedThisFrame)
@@ -305,6 +324,7 @@ namespace RenderingSandbox
                 ResetHistory();
                 UpdateEffectiveHistoryWeight();
                 UpdatePresentationMaterial();
+                MarkPresetCustom();
                 debugOverlay.Refresh();
             }
 
@@ -314,6 +334,7 @@ namespace RenderingSandbox
                 ResetHistory();
                 UpdateEffectiveHistoryWeight();
                 UpdatePresentationMaterial();
+                MarkPresetCustom();
                 debugOverlay.Refresh();
             }
             else if (keyboard.rightBracketKey.wasPressedThisFrame)
@@ -322,12 +343,14 @@ namespace RenderingSandbox
                 ResetHistory();
                 UpdateEffectiveHistoryWeight();
                 UpdatePresentationMaterial();
+                MarkPresetCustom();
                 debugOverlay.Refresh();
             }
 
             if (keyboard.yKey.wasPressedThisFrame)
             {
                 ToggleAutoCameraMotion();
+                MarkPresetCustom();
             }
 
             if (keyboard.uKey.wasPressedThisFrame)
@@ -335,6 +358,7 @@ namespace RenderingSandbox
                 simpleReprojectionEnabled = !simpleReprojectionEnabled;
                 ResetHistory();
                 UpdatePresentationMaterial();
+                MarkPresetCustom();
                 debugOverlay.Refresh();
             }
 
@@ -345,6 +369,7 @@ namespace RenderingSandbox
                 UpdateCurrentMatrices();
                 previousViewProjectionMatrix = GetCurrentViewProjectionMatrix();
                 UpdatePresentationMaterial();
+                MarkPresetCustom();
                 debugOverlay.Refresh();
             }
 
@@ -358,7 +383,33 @@ namespace RenderingSandbox
                 UpdateCurrentMatrices();
                 previousViewProjectionMatrix = GetCurrentViewProjectionMatrix();
                 UpdatePresentationMaterial();
+                MarkPresetCustom();
                 debugOverlay.Refresh();
+            }
+
+            if (keyboard.f1Key.wasPressedThisFrame)
+            {
+                ApplyPreset(TestingPreset.Baseline);
+            }
+            else if (keyboard.f2Key.wasPressedThisFrame)
+            {
+                ApplyPreset(TestingPreset.NaiveTemporal);
+            }
+            else if (keyboard.f3Key.wasPressedThisFrame)
+            {
+                ApplyPreset(TestingPreset.MotionAwareTemporal);
+            }
+            else if (keyboard.f4Key.wasPressedThisFrame)
+            {
+                ApplyPreset(TestingPreset.SimpleReprojection);
+            }
+            else if (keyboard.f5Key.wasPressedThisFrame)
+            {
+                ApplyPreset(TestingPreset.MatrixReprojection);
+            }
+            else if (keyboard.f6Key.wasPressedThisFrame)
+            {
+                ApplyPreset(TestingPreset.JitteredTemporal);
             }
         }
 
@@ -524,6 +575,149 @@ namespace RenderingSandbox
             };
         }
 
+        private void ApplyPreset(TestingPreset preset)
+        {
+            // Presets make visual testing more repeatable by applying a known group of settings
+            // in one step. That makes side-by-side comparisons easier than trying to remember
+            // a full hotkey sequence every time.
+            const float highHistoryWeight = 0.9f;
+
+            switch (preset)
+            {
+                case TestingPreset.Baseline:
+                    SetRenderingMode(RenderingMode.HalfResolution);
+                    SetUpscaleMode(UpscaleMode.Bilinear);
+                    temporalAccumulationEnabled = false;
+                    historyWeight = highHistoryWeight;
+                    simpleReprojectionEnabled = false;
+                    matrixReprojectionEnabled = false;
+                    jitterEnabled = false;
+                    SetAutoCameraMotion(false);
+                    break;
+                case TestingPreset.NaiveTemporal:
+                    SetRenderingMode(RenderingMode.QuarterResolution);
+                    SetUpscaleMode(UpscaleMode.Bilinear);
+                    temporalAccumulationEnabled = true;
+                    historyWeight = highHistoryWeight;
+                    simpleReprojectionEnabled = false;
+                    matrixReprojectionEnabled = false;
+                    jitterEnabled = false;
+                    SetAutoCameraMotion(true);
+                    break;
+                case TestingPreset.MotionAwareTemporal:
+                    SetRenderingMode(RenderingMode.QuarterResolution);
+                    SetUpscaleMode(UpscaleMode.Bilinear);
+                    temporalAccumulationEnabled = true;
+                    historyWeight = highHistoryWeight;
+                    simpleReprojectionEnabled = false;
+                    matrixReprojectionEnabled = false;
+                    jitterEnabled = false;
+                    SetAutoCameraMotion(true);
+                    break;
+                case TestingPreset.SimpleReprojection:
+                    SetRenderingMode(RenderingMode.QuarterResolution);
+                    SetUpscaleMode(UpscaleMode.Bilinear);
+                    temporalAccumulationEnabled = true;
+                    historyWeight = highHistoryWeight;
+                    simpleReprojectionEnabled = true;
+                    matrixReprojectionEnabled = false;
+                    jitterEnabled = false;
+                    SetAutoCameraMotion(true);
+                    break;
+                case TestingPreset.MatrixReprojection:
+                    SetRenderingMode(RenderingMode.QuarterResolution);
+                    SetUpscaleMode(UpscaleMode.Bilinear);
+                    temporalAccumulationEnabled = true;
+                    historyWeight = highHistoryWeight;
+                    simpleReprojectionEnabled = false;
+                    matrixReprojectionEnabled = true;
+                    jitterEnabled = false;
+                    SetAutoCameraMotion(true);
+                    break;
+                case TestingPreset.JitteredTemporal:
+                    SetRenderingMode(RenderingMode.QuarterResolution);
+                    SetUpscaleMode(UpscaleMode.Bilinear);
+                    temporalAccumulationEnabled = true;
+                    historyWeight = highHistoryWeight;
+                    simpleReprojectionEnabled = false;
+                    matrixReprojectionEnabled = false;
+                    jitterEnabled = true;
+                    SetAutoCameraMotion(true);
+                    break;
+                default:
+                    return;
+            }
+
+            jitterFrameIndex = 0;
+            currentJitterOffsetPixels = Vector2.zero;
+            ApplyJitterToCameraProjection();
+            UpdateCurrentMatrices();
+            previousViewProjectionMatrix = GetCurrentViewProjectionMatrix();
+            ResetHistory();
+            UpdateEffectiveHistoryWeight();
+            UpdatePresentationMaterial();
+            currentPreset = preset;
+            debugOverlay.Refresh();
+        }
+
+        private void SetAutoCameraMotion(bool enabled)
+        {
+            if (autoCameraMotionEnabled == enabled)
+            {
+                if (!enabled && autoMotionPoseInitialized)
+                {
+                    targetCamera.transform.SetPositionAndRotation(savedManualCameraPosition, savedManualCameraRotation);
+                }
+
+                return;
+            }
+
+            autoCameraMotionEnabled = enabled;
+
+            if (autoCameraMotionEnabled)
+            {
+                savedManualCameraPosition = targetCamera.transform.position;
+                savedManualCameraRotation = targetCamera.transform.rotation;
+                autoMotionBaseOffset = savedManualCameraPosition - autoMotionCenter;
+                autoMotionPoseInitialized = true;
+            }
+            else if (autoMotionPoseInitialized)
+            {
+                targetCamera.transform.SetPositionAndRotation(savedManualCameraPosition, savedManualCameraRotation);
+            }
+
+            lastCameraPosition = targetCamera.transform.position;
+            lastCameraRotation = targetCamera.transform.rotation;
+            lastPositionDelta = Vector3.zero;
+            historyUvOffset = Vector2.zero;
+        }
+
+        private void MarkPresetCustom()
+        {
+            currentPreset = TestingPreset.Custom;
+        }
+
+        private string GetPresetLabel(TestingPreset preset)
+        {
+            switch (preset)
+            {
+                case TestingPreset.Baseline:
+                    return "Baseline";
+                case TestingPreset.NaiveTemporal:
+                    return "Naive Temporal";
+                case TestingPreset.MotionAwareTemporal:
+                    return "Motion-Aware Temporal";
+                case TestingPreset.SimpleReprojection:
+                    return "Simple Reprojection";
+                case TestingPreset.MatrixReprojection:
+                    return "Matrix Reprojection";
+                case TestingPreset.JitteredTemporal:
+                    return "Jittered Temporal";
+                default:
+                    return "Custom";
+            }
+        }
+
         private void ApplyJitterToCameraProjection()
         {
             if (targetCamera == null)
@@ -678,24 +872,7 @@ namespace RenderingSandbox
 
         private void ToggleAutoCameraMotion()
         {
-            autoCameraMotionEnabled = !autoCameraMotionEnabled;
-
-            if (autoCameraMotionEnabled)
-            {
-                savedManualCameraPosition = targetCamera.transform.position;
-                savedManualCameraRotation = targetCamera.transform.rotation;
-                autoMotionBaseOffset = savedManualCameraPosition - autoMotionCenter;
-                autoMotionPoseInitialized = true;
-            }
-            else if (autoMotionPoseInitialized)
-            {
-                targetCamera.transform.SetPositionAndRotation(savedManualCameraPosition, savedManualCameraRotation);
-            }
-
-            lastCameraPosition = targetCamera.transform.position;
-            lastCameraRotation = targetCamera.transform.rotation;
-            lastPositionDelta = Vector3.zero;
-            historyUvOffset = Vector2.zero;
+            SetAutoCameraMotion(!autoCameraMotionEnabled);
             UpdateCurrentMatrices();
             previousViewProjectionMatrix = GetCurrentViewProjectionMatrix();
             ResetHistory();
@@ -926,7 +1103,7 @@ namespace RenderingSandbox
             debugRect.anchorMax = new Vector2(0f, 1f);
             debugRect.pivot = new Vector2(0f, 1f);
             debugRect.anchoredPosition = new Vector2(16f, -16f);
-            debugRect.sizeDelta = new Vector2(650f, 260f);
+            debugRect.sizeDelta = new Vector2(650f, 290f);
 
             Text debugText = debugObject.GetComponent<Text>();
             if (debugText == null)

@@ -28,6 +28,7 @@ namespace RenderingSandbox
             }
 
             label.text =
+                $"Preset: {controller.CurrentPresetName}\n" +
                 $"Render Scale: {GetRenderModeName(controller.CurrentMode)}\n" +
                 $"Upscale: {GetUpscaleModeName(controller.CurrentUpscaleMode)}\n" +
                 $"Temporal: {(controller.TemporalAccumulationEnabled ? "On" : "Off")}\n" +
@@ -43,7 +44,7 @@ namespace RenderingSandbox
                 $"Auto Motion: {(controller.AutoCameraMotionEnabled ? "On" : "Off")}\n" +
                 $"Render Resolution: {controller.RenderWidth}x{controller.RenderHeight}\n" +
                 $"Screen Resolution: {controller.ScreenWidth}x{controller.ScreenHeight}\n" +
-                "Keys: 1/2/3 Scale | Q/W/E Upscale | T Temporal | U Reprojection | I Matrix Reprojection | O Jitter | [ ] Weight | Y Auto Motion";
+                "Keys: 1/2/3 Scale | Q/W/E Upscale | T Temporal | U Reprojection | I Matrix Reprojection | O Jitter | [ ] Weight | Y Auto Motion | F1-F6 Presets";
         }
 
         private static string GetRenderModeName(RenderingController.RenderingMode mode)
