@@ -6,6 +6,7 @@ Shader "Hidden/RenderingSandbox/UpscalePresent"
         _HistoryTexture("History Texture", 2D) = "black" {}
         _SharpenStrength("Sharpen Strength", Range(0, 1.5)) = 0
         _HistoryWeight("History Weight", Range(0, 0.98)) = 0.85
+        _HistoryUvOffset("History UV Offset", Vector) = (0, 0, 0, 0)
     }
 
     SubShader
@@ -42,6 +43,7 @@ Shader "Hidden/RenderingSandbox/UpscalePresent"
             float _TemporalEnabled;
             float _HasHistory;
             float _HistoryWeight;
+            float4 _HistoryUvOffset;
 
             Varyings Vert(Attributes input)
             {
@@ -83,10 +85,12 @@ Shader "Hidden/RenderingSandbox/UpscalePresent"
                     return currentFrame;
                 }
 
-                // Temporal accumulation blends the current frame with history from earlier
-                // frames. The controller now sends an effective history weight that drops as
-                // camera motion rises, which makes history less dominant during movement.
-                float4 history = tex2D(_HistoryTexture, uv);
+                // Same-UV history sampling fails during motion because the old frame usually
+                // belongs at a different screen position. This slice applies one global UV
+                // offset to the history sample as a simple reprojection experiment.
+                // Full solutions use motion vectors and depth so different pixels can move differently.
+                float2 historyUv = uv + _HistoryUvOffset.xy;
+                float4 history = tex2D(_HistoryTexture, historyUv);
                 return lerp(currentFrame, history, _HistoryWeight);
             }
             ENDHLSL

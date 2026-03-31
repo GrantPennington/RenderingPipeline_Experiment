@@ -39,6 +39,11 @@ namespace RenderingSandbox
         [SerializeField] private float historyResetMotionThreshold = 0.08f;
         [SerializeField] private float rotationContributionScale = 0.01f;
 
+        [Header("Simple Reprojection")]
+        [SerializeField] private bool simpleReprojectionEnabled;
+        [SerializeField] private float translationUvScale = 0.12f;
+        [SerializeField] private float rotationUvScale = 0.0025f;
+
         [Header("Auto Camera Motion")]
         [SerializeField] private bool autoCameraMotionEnabled;
         [SerializeField] private Vector3 autoMotionCenter = Vector3.zero;
@@ -52,6 +57,7 @@ namespace RenderingSandbox
         private static readonly int TemporalEnabledId = Shader.PropertyToID("_TemporalEnabled");
         private static readonly int HasHistoryId = Shader.PropertyToID("_HasHistory");
         private static readonly int HistoryWeightId = Shader.PropertyToID("_HistoryWeight");
+        private static readonly int HistoryUvOffsetId = Shader.PropertyToID("_HistoryUvOffset");
         private const int PresentationLayer = 31;
 
         private Camera targetCamera;
@@ -74,6 +80,8 @@ namespace RenderingSandbox
         private Quaternion savedManualCameraRotation;
         private Vector3 autoMotionBaseOffset;
         private bool autoMotionPoseInitialized;
+        private Vector3 lastPositionDelta;
+        private Vector2 historyUvOffset;
 
         private RenderingMode currentMode;
         private UpscaleMode currentUpscaleMode;
@@ -85,10 +93,12 @@ namespace RenderingSandbox
         public RenderingMode CurrentMode => currentMode;
         public UpscaleMode CurrentUpscaleMode => currentUpscaleMode;
         public bool TemporalAccumulationEnabled => temporalAccumulationEnabled;
+        public bool SimpleReprojectionEnabled => simpleReprojectionEnabled;
         public bool AutoCameraMotionEnabled => autoCameraMotionEnabled;
         public float HistoryWeight => historyWeight;
         public float EffectiveHistoryWeight => effectiveHistoryWeight;
         public float CameraMotionAmount => cameraMotionAmount;
+        public Vector2 HistoryUvOffset => historyUvOffset;
         public int RenderWidth => currentMode == RenderingMode.Native ? Screen.width : currentRenderWidth;
         public int RenderHeight => currentMode == RenderingMode.Native ? Screen.height : currentRenderHeight;
         public int ScreenWidth => Screen.width;
@@ -285,6 +295,14 @@ namespace RenderingSandbox
             {
                 ToggleAutoCameraMotion();
             }
+
+            if (keyboard.uKey.wasPressedThisFrame)
+            {
+                simpleReprojectionEnabled = !simpleReprojectionEnabled;
+                ResetHistory();
+                UpdatePresentationMaterial();
+                debugOverlay.Refresh();
+            }
         }
 
         private void ApplyCurrentMode(bool forceRecreateTexture = false)
@@ -465,6 +483,7 @@ namespace RenderingSandbox
                 upscaleMaterial.SetFloat(TemporalEnabledId, 0f);
                 upscaleMaterial.SetFloat(HasHistoryId, 0f);
                 upscaleMaterial.SetFloat(HistoryWeightId, effectiveHistoryWeight);
+                upscaleMaterial.SetVector(HistoryUvOffsetId, Vector4.zero);
                 return;
             }
 
@@ -484,6 +503,7 @@ namespace RenderingSandbox
             upscaleMaterial.SetFloat(TemporalEnabledId, temporalAccumulationEnabled ? 1f : 0f);
             upscaleMaterial.SetFloat(HasHistoryId, hasHistoryFrame ? 1f : 0f);
             upscaleMaterial.SetFloat(HistoryWeightId, effectiveHistoryWeight);
+            upscaleMaterial.SetVector(HistoryUvOffsetId, historyUvOffset);
         }
 
         private void EnsureHistoryTextures(int width, int height)
@@ -557,6 +577,8 @@ namespace RenderingSandbox
 
             lastCameraPosition = targetCamera.transform.position;
             lastCameraRotation = targetCamera.transform.rotation;
+            lastPositionDelta = Vector3.zero;
+            historyUvOffset = Vector2.zero;
             ResetHistory();
             UpdateEffectiveHistoryWeight();
             UpdatePresentationMaterial();
@@ -585,13 +607,18 @@ namespace RenderingSandbox
             Vector3 currentPosition = targetCamera.transform.position;
             Quaternion currentRotation = targetCamera.transform.rotation;
 
-            float positionDelta = Vector3.Distance(currentPosition, lastCameraPosition);
+            Vector3 positionDeltaVector = currentPosition - lastCameraPosition;
+            lastPositionDelta = positionDeltaVector;
+            float positionDelta = positionDeltaVector.magnitude;
             float rotationDelta = Quaternion.Angle(currentRotation, lastCameraRotation) * rotationContributionScale;
             cameraMotionAmount = positionDelta + rotationDelta;
 
+            UpdateHistoryUvOffset(currentRotation);
+
             // Naive temporal accumulation ghosts because it keeps trusting old pixels even when
-            // the camera moved and those pixels no longer line up. Motion-aware weighting is a
-            // simple first step toward the role motion vectors and reprojection play in TAA-like systems.
+            // the camera moved and those pixels no longer line up. Motion-aware weighting and a
+            // simple UV offset are both rough steps toward the role motion vectors and reprojection
+            // play in TAA-like systems.
             if (cameraMotionAmount > historyResetMotionThreshold && hasHistoryFrame)
             {
                 ResetHistory();
@@ -616,6 +643,30 @@ namespace RenderingSandbox
             // increases, that trust falls off toward zero so history contributes less.
             float motionFactor = Mathf.InverseLerp(motionLowThreshold, motionHighThreshold, cameraMotionAmount);
             effectiveHistoryWeight = historyWeight * (1f - motionFactor);
+        }
+
+        private void UpdateHistoryUvOffset(Quaternion currentRotation)
+        {
+            if (!simpleReprojectionEnabled || !temporalAccumulationEnabled)
+            {
+                historyUvOffset = Vector2.zero;
+                return;
+            }
+
+            // Same-UV history sampling assumes the old frame still lines up with the new one.
+            // Reprojection tries to shift the history sample toward where that old data moved.
+            // This slice only uses one global offset from camera transform deltas, so it is a
+            // rough approximation rather than a physically correct per-pixel reprojection.
+            Vector3 localTranslationDelta = targetCamera.transform.InverseTransformDirection(lastPositionDelta);
+            Vector2 translationOffset = new Vector2(-localTranslationDelta.x, -localTranslationDelta.y) * translationUvScale;
+
+            Vector3 currentEuler = currentRotation.eulerAngles;
+            Vector3 previousEuler = lastCameraRotation.eulerAngles;
+            float yawDelta = Mathf.DeltaAngle(previousEuler.y, currentEuler.y);
+            float pitchDelta = Mathf.DeltaAngle(previousEuler.x, currentEuler.x);
+            Vector2 rotationOffset = new Vector2(-yawDelta, -pitchDelta) * rotationUvScale;
+
+            historyUvOffset = translationOffset + rotationOffset;
         }
 
         private void ReleaseTexture(ref RenderTexture texture)
