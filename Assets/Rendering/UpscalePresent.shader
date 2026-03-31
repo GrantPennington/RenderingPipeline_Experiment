@@ -8,6 +8,7 @@ Shader "Hidden/RenderingSandbox/UpscalePresent"
         _HistoryWeight("History Weight", Range(0, 0.98)) = 0.85
         _HistoryUvOffset("History UV Offset", Vector) = (0, 0, 0, 0)
         _ApproximateDepth01("Approximate Depth 0-1", Range(0, 1)) = 0.55
+        _HistoryClampAmount("History Clamp Amount", Range(0.01, 0.5)) = 0.12
     }
 
     SubShader
@@ -49,6 +50,8 @@ Shader "Hidden/RenderingSandbox/UpscalePresent"
             float _ApproximateDepth01;
             float4x4 _CurrentInverseViewProjection;
             float4x4 _PreviousViewProjection;
+            float _HistoryClampingEnabled;
+            float _HistoryClampAmount;
 
             Varyings Vert(Attributes input)
             {
@@ -122,6 +125,17 @@ Shader "Hidden/RenderingSandbox/UpscalePresent"
                 }
 
                 float4 history = tex2D(_HistoryTexture, historyUv);
+
+                // History clamping limits how far old history values are allowed to drift from
+                // the current frame. Ghosting often comes from stale history lingering too long,
+                // so clamping helps even when reprojection is still imperfect.
+                if (_HistoryClampingEnabled > 0.5)
+                {
+                    float4 minAllowed = currentFrame - _HistoryClampAmount;
+                    float4 maxAllowed = currentFrame + _HistoryClampAmount;
+                    history = clamp(history, minAllowed, maxAllowed);
+                }
+
                 return lerp(currentFrame, history, _HistoryWeight);
             }
             ENDHLSL

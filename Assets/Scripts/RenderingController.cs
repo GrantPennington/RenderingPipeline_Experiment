@@ -63,6 +63,10 @@ namespace RenderingSandbox
         [SerializeField] private bool jitterEnabled;
         [SerializeField] private float jitterPixels = 0.5f;
 
+        [Header("History Clamping")]
+        [SerializeField] private bool historyClampingEnabled;
+        [SerializeField, Range(0.01f, 0.5f)] private float historyClampAmount = 0.12f;
+
         [Header("Auto Camera Motion")]
         [SerializeField] private bool autoCameraMotionEnabled;
         [SerializeField] private Vector3 autoMotionCenter = Vector3.zero;
@@ -81,6 +85,8 @@ namespace RenderingSandbox
         private static readonly int ApproximateDepth01Id = Shader.PropertyToID("_ApproximateDepth01");
         private static readonly int CurrentInverseViewProjectionId = Shader.PropertyToID("_CurrentInverseViewProjection");
         private static readonly int PreviousViewProjectionId = Shader.PropertyToID("_PreviousViewProjection");
+        private static readonly int HistoryClampingEnabledId = Shader.PropertyToID("_HistoryClampingEnabled");
+        private static readonly int HistoryClampAmountId = Shader.PropertyToID("_HistoryClampAmount");
         private const int PresentationLayer = 31;
 
         private Camera targetCamera;
@@ -125,6 +131,7 @@ namespace RenderingSandbox
         public bool SimpleReprojectionEnabled => simpleReprojectionEnabled;
         public bool MatrixReprojectionEnabled => matrixReprojectionEnabled;
         public bool JitterEnabled => jitterEnabled;
+        public bool HistoryClampingEnabled => historyClampingEnabled;
         public bool AutoCameraMotionEnabled => autoCameraMotionEnabled;
         public string CurrentPresetName => GetPresetLabel(currentPreset);
         public float HistoryWeight => historyWeight;
@@ -387,6 +394,15 @@ namespace RenderingSandbox
                 debugOverlay.Refresh();
             }
 
+            if (keyboard.pKey.wasPressedThisFrame)
+            {
+                historyClampingEnabled = !historyClampingEnabled;
+                ResetHistory();
+                UpdatePresentationMaterial();
+                MarkPresetCustom();
+                debugOverlay.Refresh();
+            }
+
             if (keyboard.f1Key.wasPressedThisFrame)
             {
                 ApplyPreset(TestingPreset.Baseline);
@@ -592,6 +608,7 @@ namespace RenderingSandbox
                     simpleReprojectionEnabled = false;
                     matrixReprojectionEnabled = false;
                     jitterEnabled = false;
+                    historyClampingEnabled = false;
                     SetAutoCameraMotion(false);
                     break;
                 case TestingPreset.NaiveTemporal:
@@ -602,6 +619,7 @@ namespace RenderingSandbox
                     simpleReprojectionEnabled = false;
                     matrixReprojectionEnabled = false;
                     jitterEnabled = false;
+                    historyClampingEnabled = false;
                     SetAutoCameraMotion(true);
                     break;
                 case TestingPreset.MotionAwareTemporal:
@@ -612,6 +630,7 @@ namespace RenderingSandbox
                     simpleReprojectionEnabled = false;
                     matrixReprojectionEnabled = false;
                     jitterEnabled = false;
+                    historyClampingEnabled = false;
                     SetAutoCameraMotion(true);
                     break;
                 case TestingPreset.SimpleReprojection:
@@ -622,6 +641,7 @@ namespace RenderingSandbox
                     simpleReprojectionEnabled = true;
                     matrixReprojectionEnabled = false;
                     jitterEnabled = false;
+                    historyClampingEnabled = false;
                     SetAutoCameraMotion(true);
                     break;
                 case TestingPreset.MatrixReprojection:
@@ -632,6 +652,7 @@ namespace RenderingSandbox
                     simpleReprojectionEnabled = false;
                     matrixReprojectionEnabled = true;
                     jitterEnabled = false;
+                    historyClampingEnabled = false;
                     SetAutoCameraMotion(true);
                     break;
                 case TestingPreset.JitteredTemporal:
@@ -642,6 +663,7 @@ namespace RenderingSandbox
                     simpleReprojectionEnabled = false;
                     matrixReprojectionEnabled = false;
                     jitterEnabled = true;
+                    historyClampingEnabled = false;
                     SetAutoCameraMotion(true);
                     break;
                 default:
@@ -791,6 +813,8 @@ namespace RenderingSandbox
                 upscaleMaterial.SetFloat(ApproximateDepth01Id, approximateDepth01);
                 upscaleMaterial.SetMatrix(CurrentInverseViewProjectionId, currentInverseViewProjectionMatrix);
                 upscaleMaterial.SetMatrix(PreviousViewProjectionId, previousViewProjectionMatrix);
+                upscaleMaterial.SetFloat(HistoryClampingEnabledId, 0f);
+                upscaleMaterial.SetFloat(HistoryClampAmountId, historyClampAmount);
                 return;
             }
 
@@ -815,6 +839,8 @@ namespace RenderingSandbox
             upscaleMaterial.SetFloat(ApproximateDepth01Id, approximateDepth01);
             upscaleMaterial.SetMatrix(CurrentInverseViewProjectionId, currentInverseViewProjectionMatrix);
             upscaleMaterial.SetMatrix(PreviousViewProjectionId, previousViewProjectionMatrix);
+            upscaleMaterial.SetFloat(HistoryClampingEnabledId, historyClampingEnabled ? 1f : 0f);
+            upscaleMaterial.SetFloat(HistoryClampAmountId, historyClampAmount);
         }
 
         private void EnsureHistoryTextures(int width, int height)
@@ -1103,7 +1129,7 @@ namespace RenderingSandbox
             debugRect.anchorMax = new Vector2(0f, 1f);
             debugRect.pivot = new Vector2(0f, 1f);
             debugRect.anchoredPosition = new Vector2(16f, -16f);
-            debugRect.sizeDelta = new Vector2(650f, 290f);
+            debugRect.sizeDelta = new Vector2(650f, 320f);
 
             Text debugText = debugObject.GetComponent<Text>();
             if (debugText == null)
