@@ -38,10 +38,12 @@ namespace RenderingSandbox
                 $"Effective History Weight: {controller.EffectiveHistoryWeight:0.00}\n" +
                 $"Camera Motion: {controller.CameraMotionAmount:0.000}\n" +
                 $"History UV Offset: {controller.HistoryUvOffset.x:0.000}, {controller.HistoryUvOffset.y:0.000}\n" +
+                $"Jitter: {(controller.JitterEnabled ? "On" : "Off")}\n" +
+                $"Jitter Offset: {controller.CurrentJitterOffsetPixels.x:0.00}, {controller.CurrentJitterOffsetPixels.y:0.00} px\n" +
                 $"Auto Motion: {(controller.AutoCameraMotionEnabled ? "On" : "Off")}\n" +
                 $"Render Resolution: {controller.RenderWidth}x{controller.RenderHeight}\n" +
                 $"Screen Resolution: {controller.ScreenWidth}x{controller.ScreenHeight}\n" +
-                "Keys: 1/2/3 Scale | Q/W/E Upscale | T Temporal | U Reprojection | I Matrix Reprojection | [ ] Weight | Y Auto Motion";
+                "Keys: 1/2/3 Scale | Q/W/E Upscale | T Temporal | U Reprojection | I Matrix Reprojection | O Jitter | [ ] Weight | Y Auto Motion";
         }
 
         private static string GetRenderModeName(RenderingController.RenderingMode mode)

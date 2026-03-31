@@ -48,6 +48,10 @@ namespace RenderingSandbox
         [SerializeField] private bool matrixReprojectionEnabled;
         [SerializeField, Range(0f, 1f)] private float approximateDepth01 = 0.55f;
 
+        [Header("Jitter")]
+        [SerializeField] private bool jitterEnabled;
+        [SerializeField] private float jitterPixels = 0.5f;
+
         [Header("Auto Camera Motion")]
         [SerializeField] private bool autoCameraMotionEnabled;
         [SerializeField] private Vector3 autoMotionCenter = Vector3.zero;
@@ -92,6 +96,9 @@ namespace RenderingSandbox
         private Vector2 historyUvOffset;
         private Matrix4x4 currentInverseViewProjectionMatrix;
         private Matrix4x4 previousViewProjectionMatrix;
+        private int jitterFrameIndex;
+        private Vector2 currentJitterOffsetPixels;
+        private Matrix4x4 baseProjectionMatrix;
 
         private RenderingMode currentMode;
         private UpscaleMode currentUpscaleMode;
@@ -105,11 +112,13 @@ namespace RenderingSandbox
         public bool TemporalAccumulationEnabled => temporalAccumulationEnabled;
         public bool SimpleReprojectionEnabled => simpleReprojectionEnabled;
         public bool MatrixReprojectionEnabled => matrixReprojectionEnabled;
+        public bool JitterEnabled => jitterEnabled;
         public bool AutoCameraMotionEnabled => autoCameraMotionEnabled;
         public float HistoryWeight => historyWeight;
         public float EffectiveHistoryWeight => effectiveHistoryWeight;
         public float CameraMotionAmount => cameraMotionAmount;
         public Vector2 HistoryUvOffset => historyUvOffset;
+        public Vector2 CurrentJitterOffsetPixels => currentJitterOffsetPixels;
         public string CurrentReprojectionModeLabel => GetReprojectionModeLabel();
         public int RenderWidth => currentMode == RenderingMode.Native ? Screen.width : currentRenderWidth;
         public int RenderHeight => currentMode == RenderingMode.Native ? Screen.height : currentRenderHeight;
@@ -139,6 +148,7 @@ namespace RenderingSandbox
             EnsurePresentationMaterial();
             EnsurePresentationObjects();
             EnsureOverlayExists();
+            baseProjectionMatrix = targetCamera.projectionMatrix;
             lastCameraPosition = targetCamera.transform.position;
             lastCameraRotation = targetCamera.transform.rotation;
             UpdateCurrentMatrices();
@@ -160,6 +170,7 @@ namespace RenderingSandbox
         {
             HandleModeInput();
             UpdateAutoCameraMotion();
+            ApplyJitterToCameraProjection();
 
             if (Screen.width != lastScreenWidth || Screen.height != lastScreenHeight)
             {
@@ -171,6 +182,14 @@ namespace RenderingSandbox
         private void LateUpdate()
         {
             UpdateCameraMotionState();
+
+            if (jitterEnabled)
+            {
+                // Jitter only helps if the sample position changes over time. Advancing the
+                // pattern every frame makes temporal accumulation combine slightly different
+                // subpixel information instead of repeating the same sample forever.
+                jitterFrameIndex++;
+            }
         }
 
         private void OnDisable()
@@ -181,6 +200,7 @@ namespace RenderingSandbox
                 historyUpdateCoroutine = null;
             }
 
+            RestoreBaseProjectionMatrix();
             targetCamera.cullingMask = originalCameraCullingMask;
             ResetToNativeOutput();
         }
@@ -322,6 +342,19 @@ namespace RenderingSandbox
             {
                 matrixReprojectionEnabled = !matrixReprojectionEnabled;
                 ResetHistory();
+                UpdateCurrentMatrices();
+                previousViewProjectionMatrix = GetCurrentViewProjectionMatrix();
+                UpdatePresentationMaterial();
+                debugOverlay.Refresh();
+            }
+
+            if (keyboard.oKey.wasPressedThisFrame)
+            {
+                jitterEnabled = !jitterEnabled;
+                jitterFrameIndex = 0;
+                currentJitterOffsetPixels = Vector2.zero;
+                ResetHistory();
+                ApplyJitterToCameraProjection();
                 UpdateCurrentMatrices();
                 previousViewProjectionMatrix = GetCurrentViewProjectionMatrix();
                 UpdatePresentationMaterial();
@@ -489,6 +522,58 @@ namespace RenderingSandbox
                 name = "Runtime Upscale Present Material",
                 hideFlags = HideFlags.HideAndDontSave
             };
+        }
+
+        private void ApplyJitterToCameraProjection()
+        {
+            if (targetCamera == null)
+            {
+                return;
+            }
+
+            baseProjectionMatrix = targetCamera.nonJitteredProjectionMatrix;
+            currentJitterOffsetPixels = jitterEnabled ? GetJitterOffsetPixels(jitterFrameIndex) : Vector2.zero;
+
+            // Jittered sampling nudges the projection by a tiny subpixel offset each frame.
+            // Without that offset, every frame samples the same locations and temporal
+            // accumulation does not gather much new information over time.
+            Matrix4x4 jitteredProjection = baseProjectionMatrix;
+
+            if (Screen.width > 0 && Screen.height > 0 && jitterEnabled)
+            {
+                float jitterX = (currentJitterOffsetPixels.x * 2f) / Screen.width;
+                float jitterY = (currentJitterOffsetPixels.y * 2f) / Screen.height;
+                jitteredProjection.m02 += jitterX;
+                jitteredProjection.m12 += jitterY;
+            }
+
+            targetCamera.nonJitteredProjectionMatrix = baseProjectionMatrix;
+            targetCamera.projectionMatrix = jitteredProjection;
+        }
+
+        private void RestoreBaseProjectionMatrix()
+        {
+            if (targetCamera == null)
+            {
+                return;
+            }
+
+            targetCamera.projectionMatrix = baseProjectionMatrix;
+            targetCamera.nonJitteredProjectionMatrix = baseProjectionMatrix;
+            currentJitterOffsetPixels = Vector2.zero;
+        }
+
+        private Vector2 GetJitterOffsetPixels(int frameIndex)
+        {
+            Vector2[] pattern =
+            {
+                new Vector2(-0.25f, -0.25f),
+                new Vector2(0.25f, 0.25f),
+                new Vector2(-0.25f, 0.25f),
+                new Vector2(0.25f, -0.25f)
+            };
+
+            return pattern[frameIndex % pattern.Length] * jitterPixels;
         }
 
         private void UpdatePresentationMaterial()
@@ -841,7 +926,7 @@ namespace RenderingSandbox
             debugRect.anchorMax = new Vector2(0f, 1f);
             debugRect.pivot = new Vector2(0f, 1f);
             debugRect.anchoredPosition = new Vector2(16f, -16f);
-            debugRect.sizeDelta = new Vector2(620f, 220f);
+            debugRect.sizeDelta = new Vector2(650f, 260f);
 
             Text debugText = debugObject.GetComponent<Text>();
             if (debugText == null)
