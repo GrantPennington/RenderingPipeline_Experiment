@@ -28,13 +28,14 @@ namespace RenderingSandbox
             }
 
             label.text =
-                $"Mode: {GetModeName(controller.CurrentMode)}\n" +
+                $"Render Scale: {GetRenderModeName(controller.CurrentMode)}\n" +
+                $"Upscale: {GetUpscaleModeName(controller.CurrentUpscaleMode)}\n" +
                 $"Render Resolution: {controller.RenderWidth}x{controller.RenderHeight}\n" +
                 $"Screen Resolution: {controller.ScreenWidth}x{controller.ScreenHeight}\n" +
-                "Keys: 1 Native | 2 Half | 3 Quarter";
+                "Keys: 1/2/3 Scale | Q/W/E Upscale";
         }
 
-        private static string GetModeName(RenderingController.RenderingMode mode)
+        private static string GetRenderModeName(RenderingController.RenderingMode mode)
         {
             switch (mode)
             {
@@ -44,6 +45,19 @@ namespace RenderingSandbox
                     return "Quarter Resolution";
                 default:
                     return "Native";
+            }
+        }
+
+        private static string GetUpscaleModeName(RenderingController.UpscaleMode mode)
+        {
+            switch (mode)
+            {
+                case RenderingController.UpscaleMode.NearestNeighbor:
+                    return "Nearest Neighbor";
+                case RenderingController.UpscaleMode.SharpenedBilinear:
+                    return "Sharpened Bilinear";
+                default:
+                    return "Bilinear";
             }
         }
     }

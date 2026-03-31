@@ -14,24 +14,44 @@ namespace RenderingSandbox
             QuarterResolution = 4
         }
 
+        public enum UpscaleMode
+        {
+            NearestNeighbor,
+            Bilinear,
+            SharpenedBilinear
+        }
+
+        [Header("Startup")]
         [SerializeField] private RenderingMode startingMode = RenderingMode.Native;
-        [SerializeField] private KeyCode nativeModeKey = KeyCode.Alpha1;
-        [SerializeField] private KeyCode halfResolutionKey = KeyCode.Alpha2;
-        [SerializeField] private KeyCode quarterResolutionKey = KeyCode.Alpha3;
+        [SerializeField] private UpscaleMode startingUpscaleMode = UpscaleMode.Bilinear;
+
+        [Header("Presentation")]
+        [SerializeField] private Shader upscaleShader;
+        [SerializeField, Range(0f, 1.5f)] private float sharpenStrength = 0.35f;
+
+        private static readonly int SourceTextureId = Shader.PropertyToID("_SourceTexture");
+        private static readonly int SourceTexelSizeId = Shader.PropertyToID("_SourceTexelSize");
+        private static readonly int SharpenStrengthId = Shader.PropertyToID("_SharpenStrength");
+        private const int PresentationLayer = 31;
 
         private Camera targetCamera;
         private RenderTexture lowResolutionTexture;
+        private Camera presentationCamera;
+        private Transform presentationQuad;
         private Canvas overlayCanvas;
-        private RawImage upscaleImage;
         private RenderingDebugOverlay debugOverlay;
+        private Material upscaleMaterial;
+        private int originalCameraCullingMask;
 
         private RenderingMode currentMode;
+        private UpscaleMode currentUpscaleMode;
         private int currentRenderWidth;
         private int currentRenderHeight;
         private int lastScreenWidth;
         private int lastScreenHeight;
 
         public RenderingMode CurrentMode => currentMode;
+        public UpscaleMode CurrentUpscaleMode => currentUpscaleMode;
         public int RenderWidth => currentMode == RenderingMode.Native ? Screen.width : currentRenderWidth;
         public int RenderHeight => currentMode == RenderingMode.Native ? Screen.height : currentRenderHeight;
         public int ScreenWidth => Screen.width;
@@ -56,7 +76,11 @@ namespace RenderingSandbox
         private void Awake()
         {
             targetCamera = GetComponent<Camera>();
+            originalCameraCullingMask = targetCamera.cullingMask;
+            EnsurePresentationMaterial();
+            EnsurePresentationObjects();
             EnsureOverlayExists();
+            SetUpscaleMode(startingUpscaleMode, true);
             SetRenderingMode(startingMode, true);
         }
 
@@ -66,12 +90,14 @@ namespace RenderingSandbox
 
             if (Screen.width != lastScreenWidth || Screen.height != lastScreenHeight)
             {
+                UpdatePresentationQuadScale();
                 ApplyCurrentMode(forceRecreateTexture: true);
             }
         }
 
         private void OnDisable()
         {
+            targetCamera.cullingMask = originalCameraCullingMask;
             ResetToNativeOutput();
         }
 
@@ -82,6 +108,16 @@ namespace RenderingSandbox
             if (overlayCanvas != null)
             {
                 Destroy(overlayCanvas.gameObject);
+            }
+
+            if (upscaleMaterial != null)
+            {
+                Destroy(upscaleMaterial);
+            }
+
+            if (presentationCamera != null)
+            {
+                Destroy(presentationCamera.gameObject);
             }
         }
 
@@ -94,6 +130,31 @@ namespace RenderingSandbox
 
             currentMode = mode;
             ApplyCurrentMode(forceApply);
+        }
+
+        public void SetUpscaleMode(UpscaleMode mode, bool forceApply = false)
+        {
+            if (!forceApply && currentUpscaleMode == mode)
+            {
+                return;
+            }
+
+            currentUpscaleMode = mode;
+
+            if (lowResolutionTexture != null)
+            {
+                ApplySamplingState();
+            }
+
+            // Upscale mode changes affect both the RenderTexture filter and the presentation
+            // material. This is where the runtime switch between nearest, bilinear, and
+            // sharpened bilinear is actually applied.
+            UpdatePresentationMaterial();
+
+            if (debugOverlay != null)
+            {
+                debugOverlay.Refresh();
+            }
         }
 
         private void HandleModeInput()
@@ -115,6 +176,19 @@ namespace RenderingSandbox
             else if (keyboard.digit3Key.wasPressedThisFrame || keyboard.numpad3Key.wasPressedThisFrame)
             {
                 SetRenderingMode(RenderingMode.QuarterResolution);
+            }
+
+            if (keyboard.qKey.wasPressedThisFrame)
+            {
+                SetUpscaleMode(UpscaleMode.NearestNeighbor);
+            }
+            else if (keyboard.wKey.wasPressedThisFrame)
+            {
+                SetUpscaleMode(UpscaleMode.Bilinear);
+            }
+            else if (keyboard.eKey.wasPressedThisFrame)
+            {
+                SetUpscaleMode(UpscaleMode.SharpenedBilinear);
             }
         }
 
@@ -143,22 +217,29 @@ namespace RenderingSandbox
 
             if (needsNewTexture)
             {
+                // Resolution mode changes are applied here. If the requested render size changed,
+                // the old RenderTexture is released and a correctly sized one is created.
                 CreateLowResolutionTexture(desiredWidth, desiredHeight);
             }
 
-            // A RenderTexture is an off-screen color buffer. The camera renders into it
-            // instead of directly into the back buffer so we can inspect or post-process it.
+            // A RenderTexture is an off-screen color buffer. The scene camera writes into this
+            // smaller image first so we can control how it is sampled when it is enlarged later.
             targetCamera.targetTexture = lowResolutionTexture;
+            targetCamera.cullingMask = originalCameraCullingMask & ~(1 << PresentationLayer);
 
-            if (upscaleImage != null)
+            if (presentationQuad != null)
             {
-                // The "upscale" step here is simply drawing the smaller texture across the
-                // whole screen. Bilinear filtering blends neighboring pixels together, which
-                // keeps the image smooth but makes it blurrier than native rendering.
-                upscaleImage.texture = lowResolutionTexture;
-                upscaleImage.enabled = true;
+                presentationQuad.gameObject.SetActive(true);
             }
 
+            if (presentationCamera != null)
+            {
+                presentationCamera.enabled = true;
+            }
+
+            // The presentation material reads from the low-res RenderTexture and draws it onto
+            // the fullscreen quad. This is the point where the screen-facing upscale path updates.
+            UpdatePresentationMaterial();
             debugOverlay.Refresh();
         }
 
@@ -181,11 +262,28 @@ namespace RenderingSandbox
             lowResolutionTexture = new RenderTexture(descriptor)
             {
                 name = $"LowResScene_{width}x{height}",
-                filterMode = FilterMode.Bilinear,
                 wrapMode = TextureWrapMode.Clamp
             };
 
+            ApplySamplingState();
             lowResolutionTexture.Create();
+            UpdatePresentationMaterial();
+        }
+
+        private void ApplySamplingState()
+        {
+            if (lowResolutionTexture == null)
+            {
+                return;
+            }
+
+            // Sampling decides how the GPU reads between texels when a texture is enlarged.
+            // Point sampling snaps to one source texel, which makes edges look crisp and blocky.
+            // Bilinear blends neighboring texels, which looks smoother but also blurrier.
+            lowResolutionTexture.filterMode =
+                currentUpscaleMode == UpscaleMode.NearestNeighbor
+                    ? FilterMode.Point
+                    : FilterMode.Bilinear;
         }
 
         private void ReleaseRenderTexture()
@@ -200,11 +298,6 @@ namespace RenderingSandbox
                 targetCamera.targetTexture = null;
             }
 
-            if (upscaleImage != null && upscaleImage.texture == lowResolutionTexture)
-            {
-                upscaleImage.texture = null;
-            }
-
             lowResolutionTexture.Release();
             Destroy(lowResolutionTexture);
             lowResolutionTexture = null;
@@ -213,57 +306,127 @@ namespace RenderingSandbox
         private void ResetToNativeOutput()
         {
             targetCamera.targetTexture = null;
+            targetCamera.cullingMask = originalCameraCullingMask;
             currentRenderWidth = Screen.width;
             currentRenderHeight = Screen.height;
 
-            if (upscaleImage != null)
+            if (presentationQuad != null)
             {
-                upscaleImage.texture = null;
-                upscaleImage.enabled = false;
+                presentationQuad.gameObject.SetActive(false);
             }
 
+            if (presentationCamera != null)
+            {
+                presentationCamera.enabled = false;
+            }
+
+            UpdatePresentationMaterial();
             ReleaseRenderTexture();
         }
 
-        private void EnsureOverlayExists()
+        private void EnsurePresentationMaterial()
         {
-            if (overlayCanvas != null)
+            if (upscaleMaterial != null)
             {
                 return;
             }
 
-            GameObject canvasObject = new GameObject("RenderingOverlayCanvas");
-            canvasObject.transform.SetParent(transform, false);
+            if (upscaleShader == null)
+            {
+                upscaleShader = Shader.Find("Hidden/RenderingSandbox/UpscalePresent");
+            }
 
-            overlayCanvas = canvasObject.AddComponent<Canvas>();
-            overlayCanvas.renderMode = RenderMode.ScreenSpaceOverlay;
-            overlayCanvas.sortingOrder = 1000;
+            if (upscaleShader == null)
+            {
+                Debug.LogError("RenderingController could not find the UpscalePresent shader.");
+                return;
+            }
 
-            GameObject upscaleObject = new GameObject("UpscaledScene");
-            upscaleObject.transform.SetParent(canvasObject.transform, false);
+            upscaleMaterial = new Material(upscaleShader)
+            {
+                name = "Runtime Upscale Present Material",
+                hideFlags = HideFlags.HideAndDontSave
+            };
+        }
 
-            RectTransform upscaleRect = upscaleObject.AddComponent<RectTransform>();
-            upscaleRect.anchorMin = Vector2.zero;
-            upscaleRect.anchorMax = Vector2.one;
-            upscaleRect.offsetMin = Vector2.zero;
-            upscaleRect.offsetMax = Vector2.zero;
+        private void UpdatePresentationMaterial()
+        {
+            if (upscaleMaterial == null)
+            {
+                return;
+            }
 
-            upscaleImage = upscaleObject.AddComponent<RawImage>();
-            upscaleImage.color = Color.white;
-            upscaleImage.raycastTarget = false;
-            upscaleImage.enabled = false;
+            if (lowResolutionTexture == null)
+            {
+                upscaleMaterial.SetTexture(SourceTextureId, Texture2D.blackTexture);
+                upscaleMaterial.SetVector(SourceTexelSizeId, Vector4.zero);
+                upscaleMaterial.SetFloat(SharpenStrengthId, 0f);
+                return;
+            }
 
-            GameObject debugObject = new GameObject("RenderingDebugOverlay");
-            debugObject.transform.SetParent(canvasObject.transform, false);
+            upscaleMaterial.SetTexture(SourceTextureId, lowResolutionTexture);
+            upscaleMaterial.SetVector(
+                SourceTexelSizeId,
+                new Vector4(
+                    1f / lowResolutionTexture.width,
+                    1f / lowResolutionTexture.height,
+                    lowResolutionTexture.width,
+                    lowResolutionTexture.height));
+            upscaleMaterial.SetFloat(SharpenStrengthId, currentUpscaleMode == UpscaleMode.SharpenedBilinear ? sharpenStrength : 0f);
+        }
 
-            RectTransform debugRect = debugObject.AddComponent<RectTransform>();
+        private void EnsureOverlayExists()
+        {
+            if (overlayCanvas != null && debugOverlay != null)
+            {
+                return;
+            }
+
+            Transform existingCanvasTransform = transform.Find("RenderingOverlayCanvas");
+            if (existingCanvasTransform != null)
+            {
+                overlayCanvas = existingCanvasTransform.GetComponent<Canvas>();
+            }
+
+            if (overlayCanvas == null)
+            {
+                GameObject canvasObject = new GameObject("RenderingOverlayCanvas");
+                canvasObject.transform.SetParent(transform, false);
+
+                overlayCanvas = canvasObject.AddComponent<Canvas>();
+                overlayCanvas.renderMode = RenderMode.ScreenSpaceOverlay;
+                overlayCanvas.sortingOrder = 1000;
+            }
+
+            Transform debugTransform = overlayCanvas.transform.Find("RenderingDebugOverlay");
+            GameObject debugObject = debugTransform != null ? debugTransform.gameObject : new GameObject("RenderingDebugOverlay");
+            if (debugTransform == null)
+            {
+                debugObject.transform.SetParent(overlayCanvas.transform, false);
+            }
+
+            // The old stacking artifact came from drawing UI over a screen that was not being
+            // refreshed reliably, and duplicate overlay objects would make that even worse.
+            // Reusing the same canvas, text, and shadow components keeps the overlay updating
+            // in place instead of spawning extra labels on top of each other.
+            RectTransform debugRect = debugObject.GetComponent<RectTransform>();
+            if (debugRect == null)
+            {
+                debugRect = debugObject.AddComponent<RectTransform>();
+            }
+
             debugRect.anchorMin = new Vector2(0f, 1f);
             debugRect.anchorMax = new Vector2(0f, 1f);
             debugRect.pivot = new Vector2(0f, 1f);
             debugRect.anchoredPosition = new Vector2(16f, -16f);
-            debugRect.sizeDelta = new Vector2(320f, 90f);
+            debugRect.sizeDelta = new Vector2(420f, 120f);
 
-            Text debugText = debugObject.AddComponent<Text>();
+            Text debugText = debugObject.GetComponent<Text>();
+            if (debugText == null)
+            {
+                debugText = debugObject.AddComponent<Text>();
+            }
+
             Font debugFont = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
             if (debugFont == null)
             {
@@ -278,12 +441,96 @@ namespace RenderingSandbox
             debugText.color = Color.white;
             debugText.raycastTarget = false;
 
-            Shadow shadow = debugObject.AddComponent<Shadow>();
+            Shadow shadow = debugObject.GetComponent<Shadow>();
+            if (shadow == null)
+            {
+                shadow = debugObject.AddComponent<Shadow>();
+            }
+
             shadow.effectColor = new Color(0f, 0f, 0f, 0.85f);
             shadow.effectDistance = new Vector2(1f, -1f);
 
-            debugOverlay = debugObject.AddComponent<RenderingDebugOverlay>();
+            debugOverlay = debugObject.GetComponent<RenderingDebugOverlay>();
+            if (debugOverlay == null)
+            {
+                debugOverlay = debugObject.AddComponent<RenderingDebugOverlay>();
+            }
+
             debugOverlay.Initialize(this, debugText);
+        }
+
+        private void EnsurePresentationObjects()
+        {
+            if (presentationCamera != null && presentationQuad != null)
+            {
+                return;
+            }
+
+            Transform cameraTransform = transform;
+            Transform presentationRoot = cameraTransform.Find("PresentationCamera");
+
+            if (presentationRoot == null)
+            {
+                GameObject presentationCameraObject = new GameObject("PresentationCamera");
+                presentationRoot = presentationCameraObject.transform;
+                presentationRoot.SetParent(cameraTransform, false);
+            }
+
+            presentationCamera = presentationRoot.GetComponent<Camera>();
+            if (presentationCamera == null)
+            {
+                presentationCamera = presentationRoot.gameObject.AddComponent<Camera>();
+            }
+
+            presentationCamera.orthographic = true;
+            presentationCamera.orthographicSize = 1f;
+            presentationCamera.clearFlags = CameraClearFlags.SolidColor;
+            presentationCamera.backgroundColor = Color.black;
+            presentationCamera.cullingMask = 1 << PresentationLayer;
+            presentationCamera.depth = targetCamera.depth + 1f;
+            presentationCamera.nearClipPlane = 0.01f;
+            presentationCamera.farClipPlane = 10f;
+            presentationCamera.enabled = false;
+
+            Transform quadTransform = presentationRoot.Find("PresentationQuad");
+            if (quadTransform == null)
+            {
+                GameObject quadObject = GameObject.CreatePrimitive(PrimitiveType.Quad);
+                quadObject.name = "PresentationQuad";
+                quadTransform = quadObject.transform;
+                quadTransform.SetParent(presentationRoot, false);
+
+                Collider quadCollider = quadObject.GetComponent<Collider>();
+                if (quadCollider != null)
+                {
+                    Destroy(quadCollider);
+                }
+            }
+
+            presentationQuad = quadTransform;
+            presentationQuad.gameObject.layer = PresentationLayer;
+            presentationQuad.localPosition = new Vector3(0f, 0f, 1f);
+            presentationQuad.localRotation = Quaternion.identity;
+            presentationQuad.gameObject.SetActive(false);
+            UpdatePresentationQuadScale();
+
+            MeshRenderer quadRenderer = presentationQuad.GetComponent<MeshRenderer>();
+            quadRenderer.sharedMaterial = upscaleMaterial;
+            quadRenderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+            quadRenderer.receiveShadows = false;
+            quadRenderer.lightProbeUsage = UnityEngine.Rendering.LightProbeUsage.Off;
+            quadRenderer.reflectionProbeUsage = UnityEngine.Rendering.ReflectionProbeUsage.Off;
+        }
+
+        private void UpdatePresentationQuadScale()
+        {
+            if (presentationQuad == null)
+            {
+                return;
+            }
+
+            float aspect = Screen.height > 0 ? (float)Screen.width / Screen.height : 1f;
+            presentationQuad.localScale = new Vector3(2f * aspect, 2f, 1f);
         }
     }
 }
