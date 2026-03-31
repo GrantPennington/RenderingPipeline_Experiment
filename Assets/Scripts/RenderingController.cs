@@ -45,7 +45,8 @@ namespace RenderingSandbox
             HistoryConfidence,
             HistoryRejectionAmount,
             ReprojectionValidity,
-            HistoryTrustMask
+            HistoryTrustMask,
+            MotionVectorMagnitude
         }
 
         public enum OverlayDetailMode
@@ -80,6 +81,7 @@ namespace RenderingSandbox
         [SerializeField] private bool matrixReprojectionEnabled;
         [SerializeField, Range(0f, 1f)] private float approximateDepth01 = 0.55f;
         [SerializeField] private bool realDepthReprojectionEnabled;
+        [SerializeField] private bool motionVectorReprojectionEnabled;
         [SerializeField] private bool reprojectionValidityMaskingEnabled = true;
 
         [Header("Jitter")]
@@ -112,6 +114,10 @@ namespace RenderingSandbox
         private static readonly int HistoryWeightId = Shader.PropertyToID("_HistoryWeight");
         private static readonly int HistoryUvOffsetId = Shader.PropertyToID("_HistoryUvOffset");
         private static readonly int ReprojectionModeId = Shader.PropertyToID("_ReprojectionMode");
+        private static readonly int SimpleReprojectionEnabledId = Shader.PropertyToID("_SimpleReprojectionEnabled");
+        private static readonly int MatrixReprojectionEnabledId = Shader.PropertyToID("_MatrixReprojectionEnabled");
+        private static readonly int RealDepthReprojectionEnabledId = Shader.PropertyToID("_RealDepthReprojectionEnabled");
+        private static readonly int MotionVectorReprojectionEnabledId = Shader.PropertyToID("_MotionVectorReprojectionEnabled");
         private static readonly int ApproximateDepth01Id = Shader.PropertyToID("_ApproximateDepth01");
         private static readonly int CurrentInverseViewProjectionId = Shader.PropertyToID("_CurrentInverseViewProjection");
         private static readonly int PreviousViewProjectionId = Shader.PropertyToID("_PreviousViewProjection");
@@ -167,6 +173,7 @@ namespace RenderingSandbox
         public bool SimpleReprojectionEnabled => simpleReprojectionEnabled;
         public bool MatrixReprojectionEnabled => matrixReprojectionEnabled;
         public bool RealDepthReprojectionEnabled => realDepthReprojectionEnabled;
+        public bool MotionVectorReprojectionEnabled => motionVectorReprojectionEnabled;
         public bool ReprojectionValidityMaskingEnabled => reprojectionValidityMaskingEnabled;
         public bool JitterEnabled => jitterEnabled;
         public bool HistoryClampingEnabled => historyClampingEnabled;
@@ -415,7 +422,7 @@ namespace RenderingSandbox
                 MarkPresetCustom();
                 debugOverlay.Refresh();
             }
-            else if (keyboard.mKey.wasPressedThisFrame)
+            else if (keyboard.commaKey.wasPressedThisFrame)
             {
                 historyClampAmount = Mathf.Clamp(historyClampAmount - 0.01f, 0.01f, 0.5f);
                 UpdatePresentationMaterial();
@@ -464,6 +471,15 @@ namespace RenderingSandbox
                 ResetHistory();
                 UpdateCurrentMatrices();
                 previousViewProjectionMatrix = GetCurrentViewProjectionMatrix();
+                UpdatePresentationMaterial();
+                MarkPresetCustom();
+                debugOverlay.Refresh();
+            }
+
+            if (keyboard.mKey.wasPressedThisFrame)
+            {
+                motionVectorReprojectionEnabled = !motionVectorReprojectionEnabled;
+                ResetHistory();
                 UpdatePresentationMaterial();
                 MarkPresetCustom();
                 debugOverlay.Refresh();
@@ -709,7 +725,9 @@ namespace RenderingSandbox
         {
             // Real depth reprojection needs the scene camera to publish a depth texture so the
             // presentation shader can reconstruct a world position from the current pixel.
-            targetCamera.depthTextureMode |= DepthTextureMode.Depth;
+            // Motion-vector reprojection also asks Unity to publish per-pixel motion so the
+            // sandbox can compare camera/depth reprojection against true screen-space motion.
+            targetCamera.depthTextureMode |= DepthTextureMode.Depth | DepthTextureMode.MotionVectors;
 
             UniversalAdditionalCameraData additionalCameraData = targetCamera.GetComponent<UniversalAdditionalCameraData>();
             if (additionalCameraData != null)
@@ -735,6 +753,7 @@ namespace RenderingSandbox
                     simpleReprojectionEnabled = false;
                     matrixReprojectionEnabled = false;
                     realDepthReprojectionEnabled = false;
+                    motionVectorReprojectionEnabled = false;
                     reprojectionValidityMaskingEnabled = true;
                     jitterEnabled = false;
                     historyClampingEnabled = false;
@@ -748,6 +767,7 @@ namespace RenderingSandbox
                     simpleReprojectionEnabled = false;
                     matrixReprojectionEnabled = false;
                     realDepthReprojectionEnabled = false;
+                    motionVectorReprojectionEnabled = false;
                     reprojectionValidityMaskingEnabled = true;
                     jitterEnabled = false;
                     historyClampingEnabled = false;
@@ -761,6 +781,7 @@ namespace RenderingSandbox
                     simpleReprojectionEnabled = false;
                     matrixReprojectionEnabled = false;
                     realDepthReprojectionEnabled = false;
+                    motionVectorReprojectionEnabled = false;
                     reprojectionValidityMaskingEnabled = true;
                     jitterEnabled = false;
                     historyClampingEnabled = false;
@@ -774,6 +795,7 @@ namespace RenderingSandbox
                     simpleReprojectionEnabled = true;
                     matrixReprojectionEnabled = false;
                     realDepthReprojectionEnabled = false;
+                    motionVectorReprojectionEnabled = false;
                     reprojectionValidityMaskingEnabled = true;
                     jitterEnabled = false;
                     historyClampingEnabled = false;
@@ -787,6 +809,7 @@ namespace RenderingSandbox
                     simpleReprojectionEnabled = false;
                     matrixReprojectionEnabled = true;
                     realDepthReprojectionEnabled = false;
+                    motionVectorReprojectionEnabled = false;
                     reprojectionValidityMaskingEnabled = true;
                     jitterEnabled = false;
                     historyClampingEnabled = false;
@@ -800,6 +823,7 @@ namespace RenderingSandbox
                     simpleReprojectionEnabled = false;
                     matrixReprojectionEnabled = false;
                     realDepthReprojectionEnabled = false;
+                    motionVectorReprojectionEnabled = false;
                     reprojectionValidityMaskingEnabled = true;
                     jitterEnabled = true;
                     historyClampingEnabled = false;
@@ -905,6 +929,8 @@ namespace RenderingSandbox
                     return "Geometric Reprojection Validity";
                 case DebugVisualizationMode.HistoryTrustMask:
                     return "History Trust Mask";
+                case DebugVisualizationMode.MotionVectorMagnitude:
+                    return "Motion Vector Magnitude";
                 default:
                     return "Final Output";
             }
@@ -980,6 +1006,10 @@ namespace RenderingSandbox
                 upscaleMaterial.SetFloat(HistoryWeightId, effectiveHistoryWeight);
                 upscaleMaterial.SetVector(HistoryUvOffsetId, Vector4.zero);
                 upscaleMaterial.SetFloat(ReprojectionModeId, 0f);
+                upscaleMaterial.SetFloat(SimpleReprojectionEnabledId, simpleReprojectionEnabled ? 1f : 0f);
+                upscaleMaterial.SetFloat(MatrixReprojectionEnabledId, matrixReprojectionEnabled ? 1f : 0f);
+                upscaleMaterial.SetFloat(RealDepthReprojectionEnabledId, realDepthReprojectionEnabled ? 1f : 0f);
+                upscaleMaterial.SetFloat(MotionVectorReprojectionEnabledId, motionVectorReprojectionEnabled ? 1f : 0f);
                 upscaleMaterial.SetFloat(ApproximateDepth01Id, approximateDepth01);
                 upscaleMaterial.SetMatrix(CurrentInverseViewProjectionId, currentInverseViewProjectionMatrix);
                 upscaleMaterial.SetMatrix(PreviousViewProjectionId, previousViewProjectionMatrix);
@@ -1012,6 +1042,10 @@ namespace RenderingSandbox
             upscaleMaterial.SetFloat(HistoryWeightId, effectiveHistoryWeight);
             upscaleMaterial.SetVector(HistoryUvOffsetId, historyUvOffset);
             upscaleMaterial.SetFloat(ReprojectionModeId, GetReprojectionModeValue());
+            upscaleMaterial.SetFloat(SimpleReprojectionEnabledId, simpleReprojectionEnabled ? 1f : 0f);
+            upscaleMaterial.SetFloat(MatrixReprojectionEnabledId, matrixReprojectionEnabled ? 1f : 0f);
+            upscaleMaterial.SetFloat(RealDepthReprojectionEnabledId, realDepthReprojectionEnabled ? 1f : 0f);
+            upscaleMaterial.SetFloat(MotionVectorReprojectionEnabledId, motionVectorReprojectionEnabled ? 1f : 0f);
             upscaleMaterial.SetFloat(ApproximateDepth01Id, approximateDepth01);
             upscaleMaterial.SetMatrix(CurrentInverseViewProjectionId, currentInverseViewProjectionMatrix);
             upscaleMaterial.SetMatrix(PreviousViewProjectionId, previousViewProjectionMatrix);
@@ -1189,6 +1223,11 @@ namespace RenderingSandbox
 
         private float GetReprojectionModeValue()
         {
+            if (motionVectorReprojectionEnabled)
+            {
+                return 4f;
+            }
+
             if (realDepthReprojectionEnabled)
             {
                 return 3f;
@@ -1204,6 +1243,11 @@ namespace RenderingSandbox
 
         private string GetReprojectionModeLabel()
         {
+            if (motionVectorReprojectionEnabled)
+            {
+                return "Motion Vectors";
+            }
+
             if (realDepthReprojectionEnabled)
             {
                 return "Real Depth";

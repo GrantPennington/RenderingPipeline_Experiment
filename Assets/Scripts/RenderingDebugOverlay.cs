@@ -50,6 +50,7 @@ namespace RenderingSandbox
                 $"Reprojection: {(controller.SimpleReprojectionEnabled ? "On" : "Off")}\n" +
                 $"Matrix Reprojection: {(controller.MatrixReprojectionEnabled ? "On" : "Off")}\n" +
                 $"Real Depth Reprojection: {(controller.RealDepthReprojectionEnabled ? "On" : "Off")}\n" +
+                $"Motion Vector Reprojection: {(controller.MotionVectorReprojectionEnabled ? "On" : "Off")}\n" +
                 $"Validity Masking: {(controller.ReprojectionValidityMaskingEnabled ? "On" : "Off")}\n" +
                 $"Base History Weight: {controller.HistoryWeight:0.00}\n" +
                 $"Effective History Weight: {controller.EffectiveHistoryWeight:0.00}\n" +
@@ -63,7 +64,7 @@ namespace RenderingSandbox
                 $"Auto Motion: {(controller.AutoCameraMotionEnabled ? "On" : "Off")}\n" +
                 $"Render Resolution: {controller.RenderWidth}x{controller.RenderHeight}\n" +
                 $"Screen Resolution: {controller.ScreenWidth}x{controller.ScreenHeight}\n" +
-                "Keys: 1/2/3 Scale | Q/W/E Upscale | T Temporal | P Clamp | U Reprojection | I Matrix Reprojection | L Real Depth | O Validity | H Jitter | V View | B Overlay | [ ] Weight | J/K Threshold | N/M Rejection | Y Auto Motion | F1-F6 Presets";
+                "Keys: 1/2/3 Scale | Q/W/E Upscale | T Temporal | P Clamp | U Reprojection | I Matrix Reprojection | L Real Depth | M Motion Vectors | O Validity | H Jitter | V View | B Overlay | [ ] Weight | J/K Threshold | N/, Rejection | Y Auto Motion | F1-F6 Presets";
         }
 
         private static string GetRenderModeName(RenderingController.RenderingMode mode)

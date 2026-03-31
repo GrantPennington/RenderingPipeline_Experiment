@@ -40,6 +40,7 @@ Shader "Hidden/RenderingSandbox/UpscalePresent"
             sampler2D _SourceTexture;
             sampler2D _HistoryTexture;
             sampler2D _CameraDepthTexture;
+            sampler2D _CameraMotionVectorsTexture;
 
             float4 _SourceTexelSize;
             float _SharpenStrength;
@@ -48,6 +49,10 @@ Shader "Hidden/RenderingSandbox/UpscalePresent"
             float _HistoryWeight;
             float4 _HistoryUvOffset;
             float _ReprojectionMode;
+            float _SimpleReprojectionEnabled;
+            float _MatrixReprojectionEnabled;
+            float _RealDepthReprojectionEnabled;
+            float _MotionVectorReprojectionEnabled;
             float _ApproximateDepth01;
             float4x4 _CurrentInverseViewProjection;
             float4x4 _PreviousViewProjection;
@@ -102,12 +107,34 @@ Shader "Hidden/RenderingSandbox/UpscalePresent"
 
                 float2 historyUv = uv;
                 float sceneDepth = tex2D(_CameraDepthTexture, uv).r;
+                // _CameraMotionVectorsTexture is the camera-global motion vector texture Unity
+                // exposes for the currently rendering camera. This fullscreen presentation path
+                // is not a URP ScriptableRenderPass with ConfigureInput(Motion), so the render-
+                // pass-specific _MotionVectorTexture hookup is not reliable here.
+                float2 motionVectorUv = tex2D(_CameraMotionVectorsTexture, uv).xy;
                 float depthTexelX = 1.0 / max(_ScreenParams.x, 1.0);
                 float depthTexelY = 1.0 / max(_ScreenParams.y, 1.0);
                 float reprojectionValidity = 1.0;
                 float previousClipW = 1.0;
+                float motionVectorMagnitude = length(motionVectorUv);
+                float motionVectorLooksValid = step(motionVectorMagnitude, 0.25);
+                motionVectorLooksValid *= step(0.000001, abs(motionVectorUv.x) + abs(motionVectorUv.y));
 
-                if (_ReprojectionMode > 2.5)
+                bool usedMotionVectorReprojection = false;
+                bool canUseMotionVectorReprojection =
+                    _MotionVectorReprojectionEnabled > 0.5 &&
+                    motionVectorLooksValid > 0.5;
+
+                if (canUseMotionVectorReprojection)
+                {
+                    // Motion vectors describe how this pixel moved across the screen. That is
+                    // different from camera/depth reprojection, which infers motion from camera
+                    // transforms and depth. Using the motion vector lets history lookup follow
+                    // the pixel's previous location more directly.
+                    historyUv = uv - motionVectorUv;
+                    usedMotionVectorReprojection = true;
+                }
+                else if (_RealDepthReprojectionEnabled > 0.5)
                 {
                     // Real depth improves reprojection because each pixel reconstructs a point
                     // from its own scene depth instead of assuming one flat depth plane across
@@ -128,7 +155,7 @@ Shader "Hidden/RenderingSandbox/UpscalePresent"
                     previousClipW = previousClip.w;
                     historyUv = (previousClip.xy / max(previousClip.w, 0.0001)) * 0.5 + 0.5;
                 }
-                else if (_ReprojectionMode > 1.5)
+                else if (_MatrixReprojectionEnabled > 0.5)
                 {
                     // Global UV offsets are only a rough approximation because every pixel moves
                     // differently as depth changes. Matrix reprojection tries to do something more
@@ -150,7 +177,7 @@ Shader "Hidden/RenderingSandbox/UpscalePresent"
                     previousClipW = previousClip.w;
                     historyUv = (previousClip.xy / max(previousClip.w, 0.0001)) * 0.5 + 0.5;
                 }
-                else if (_ReprojectionMode > 0.5)
+                else if (_SimpleReprojectionEnabled > 0.5)
                 {
                     // Same-UV history sampling fails during motion because the old frame usually
                     // belongs at a different screen position. This simple mode applies one
@@ -174,13 +201,13 @@ Shader "Hidden/RenderingSandbox/UpscalePresent"
                     float edgeValidity = saturate(min(historyUvEdgeDistance.x, historyUvEdgeDistance.y) * 48.0);
                     reprojectionValidity *= edgeValidity;
 
-                    if (_ReprojectionMode > 2.5)
+                    if (!usedMotionVectorReprojection && _RealDepthReprojectionEnabled > 0.5)
                     {
                         float depthValid = step(0.0001, sceneDepth) * step(sceneDepth, 0.9999);
                         reprojectionValidity *= depthValid;
                     }
 
-                    if (_ReprojectionMode > 1.5)
+                    if (!usedMotionVectorReprojection && (_RealDepthReprojectionEnabled > 0.5 || _MatrixReprojectionEnabled > 0.5))
                     {
                         float depthLeft = tex2D(_CameraDepthTexture, uv + float2(-depthTexelX, 0.0)).r;
                         float depthRight = tex2D(_CameraDepthTexture, uv + float2(depthTexelX, 0.0)).r;
@@ -285,7 +312,16 @@ Shader "Hidden/RenderingSandbox/UpscalePresent"
 
                 // This view shows rejection-aware history trust without the global temporal
                 // weight. It is often easier to read than the geometric validity mask alone.
-                return float4(historyTrustMask, historyTrustMask, historyTrustMask, 1.0);
+                if (_DebugVisualizationMode < 8.5)
+                {
+                    return float4(historyTrustMask, historyTrustMask, historyTrustMask, 1.0);
+                }
+
+                // Motion vectors are stored in screen-space UV units. This view shows magnitude
+                // only so it is easy to compare "how much this pixel moved" against the other
+                // reprojection debug modes without needing to decode vector direction first.
+                float motionVectorMagnitudeDebug = saturate(motionVectorMagnitude * 32.0);
+                return float4(motionVectorMagnitudeDebug, motionVectorMagnitudeDebug, motionVectorMagnitudeDebug, 1.0);
             }
             ENDHLSL
         }
