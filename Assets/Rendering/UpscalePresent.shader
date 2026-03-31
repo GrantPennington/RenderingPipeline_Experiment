@@ -39,6 +39,7 @@ Shader "Hidden/RenderingSandbox/UpscalePresent"
 
             sampler2D _SourceTexture;
             sampler2D _HistoryTexture;
+            sampler2D _CameraDepthTexture;
 
             float4 _SourceTexelSize;
             float _SharpenStrength;
@@ -100,7 +101,28 @@ Shader "Hidden/RenderingSandbox/UpscalePresent"
 
                 float2 historyUv = uv;
 
-                if (_ReprojectionMode > 1.5)
+                if (_ReprojectionMode > 2.5)
+                {
+                    // Real depth improves reprojection because each pixel reconstructs a point
+                    // from its own scene depth instead of assuming one flat depth plane across
+                    // the whole screen. That makes camera-motion reprojection more spatially
+                    // coherent, even though object motion and occlusion changes can still fail
+                    // without motion vectors and dedicated disocclusion handling.
+                    float sceneDepth = tex2D(_CameraDepthTexture, uv).r;
+                    float2 ndc = uv * 2.0 - 1.0;
+                    float clipDepth = UNITY_NEAR_CLIP_VALUE < 0.0 ? (sceneDepth * 2.0 - 1.0) : sceneDepth;
+                    float4 clipPosition = float4(ndc, clipDepth, 1.0);
+
+                    // Current UV + depth + inverse VP reconstructs a world-space position for
+                    // this pixel. The previous VP matrix then asks where that same point lived
+                    // on the screen last frame so history can be sampled there.
+                    float4 worldPosition = mul(_CurrentInverseViewProjection, clipPosition);
+                    worldPosition /= max(worldPosition.w, 0.0001);
+
+                    float4 previousClip = mul(_PreviousViewProjection, worldPosition);
+                    historyUv = (previousClip.xy / max(previousClip.w, 0.0001)) * 0.5 + 0.5;
+                }
+                else if (_ReprojectionMode > 1.5)
                 {
                     // Global UV offsets are only a rough approximation because every pixel moves
                     // differently as depth changes. Matrix reprojection tries to do something more

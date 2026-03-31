@@ -1,5 +1,7 @@
 using UnityEngine;
 using UnityEngine.InputSystem;
+using UnityEngine.Rendering;
+using UnityEngine.Rendering.Universal;
 using UnityEngine.UI;
 using System.Collections;
 
@@ -75,6 +77,7 @@ namespace RenderingSandbox
         [Header("Matrix Reprojection")]
         [SerializeField] private bool matrixReprojectionEnabled;
         [SerializeField, Range(0f, 1f)] private float approximateDepth01 = 0.55f;
+        [SerializeField] private bool realDepthReprojectionEnabled;
 
         [Header("Jitter")]
         [SerializeField] private bool jitterEnabled;
@@ -159,6 +162,7 @@ namespace RenderingSandbox
         public bool TemporalAccumulationEnabled => temporalAccumulationEnabled;
         public bool SimpleReprojectionEnabled => simpleReprojectionEnabled;
         public bool MatrixReprojectionEnabled => matrixReprojectionEnabled;
+        public bool RealDepthReprojectionEnabled => realDepthReprojectionEnabled;
         public bool JitterEnabled => jitterEnabled;
         public bool HistoryClampingEnabled => historyClampingEnabled;
         public bool AutoCameraMotionEnabled => autoCameraMotionEnabled;
@@ -200,6 +204,7 @@ namespace RenderingSandbox
         {
             targetCamera = GetComponent<Camera>();
             originalCameraCullingMask = targetCamera.cullingMask;
+            ConfigureSceneDepthAccess();
             EnsurePresentationMaterial();
             EnsurePresentationObjects();
             EnsureOverlayExists();
@@ -448,6 +453,17 @@ namespace RenderingSandbox
                 debugOverlay.Refresh();
             }
 
+            if (keyboard.lKey.wasPressedThisFrame)
+            {
+                realDepthReprojectionEnabled = !realDepthReprojectionEnabled;
+                ResetHistory();
+                UpdateCurrentMatrices();
+                previousViewProjectionMatrix = GetCurrentViewProjectionMatrix();
+                UpdatePresentationMaterial();
+                MarkPresetCustom();
+                debugOverlay.Refresh();
+            }
+
             if (keyboard.oKey.wasPressedThisFrame)
             {
                 jitterEnabled = !jitterEnabled;
@@ -675,6 +691,19 @@ namespace RenderingSandbox
             };
         }
 
+        private void ConfigureSceneDepthAccess()
+        {
+            // Real depth reprojection needs the scene camera to publish a depth texture so the
+            // presentation shader can reconstruct a world position from the current pixel.
+            targetCamera.depthTextureMode |= DepthTextureMode.Depth;
+
+            UniversalAdditionalCameraData additionalCameraData = targetCamera.GetComponent<UniversalAdditionalCameraData>();
+            if (additionalCameraData != null)
+            {
+                additionalCameraData.requiresDepthOption = CameraOverrideOption.On;
+            }
+        }
+
         private void ApplyPreset(TestingPreset preset)
         {
             // Presets make visual testing more repeatable by applying a known group of settings
@@ -691,6 +720,7 @@ namespace RenderingSandbox
                     historyWeight = highHistoryWeight;
                     simpleReprojectionEnabled = false;
                     matrixReprojectionEnabled = false;
+                    realDepthReprojectionEnabled = false;
                     jitterEnabled = false;
                     historyClampingEnabled = false;
                     SetAutoCameraMotion(false);
@@ -702,6 +732,7 @@ namespace RenderingSandbox
                     historyWeight = highHistoryWeight;
                     simpleReprojectionEnabled = false;
                     matrixReprojectionEnabled = false;
+                    realDepthReprojectionEnabled = false;
                     jitterEnabled = false;
                     historyClampingEnabled = false;
                     SetAutoCameraMotion(true);
@@ -713,6 +744,7 @@ namespace RenderingSandbox
                     historyWeight = highHistoryWeight;
                     simpleReprojectionEnabled = false;
                     matrixReprojectionEnabled = false;
+                    realDepthReprojectionEnabled = false;
                     jitterEnabled = false;
                     historyClampingEnabled = false;
                     SetAutoCameraMotion(true);
@@ -724,6 +756,7 @@ namespace RenderingSandbox
                     historyWeight = highHistoryWeight;
                     simpleReprojectionEnabled = true;
                     matrixReprojectionEnabled = false;
+                    realDepthReprojectionEnabled = false;
                     jitterEnabled = false;
                     historyClampingEnabled = false;
                     SetAutoCameraMotion(true);
@@ -735,6 +768,7 @@ namespace RenderingSandbox
                     historyWeight = highHistoryWeight;
                     simpleReprojectionEnabled = false;
                     matrixReprojectionEnabled = true;
+                    realDepthReprojectionEnabled = false;
                     jitterEnabled = false;
                     historyClampingEnabled = false;
                     SetAutoCameraMotion(true);
@@ -746,6 +780,7 @@ namespace RenderingSandbox
                     historyWeight = highHistoryWeight;
                     simpleReprojectionEnabled = false;
                     matrixReprojectionEnabled = false;
+                    realDepthReprojectionEnabled = false;
                     jitterEnabled = true;
                     historyClampingEnabled = false;
                     SetAutoCameraMotion(true);
@@ -1128,6 +1163,11 @@ namespace RenderingSandbox
 
         private float GetReprojectionModeValue()
         {
+            if (realDepthReprojectionEnabled)
+            {
+                return 3f;
+            }
+
             if (matrixReprojectionEnabled)
             {
                 return 2f;
@@ -1138,6 +1178,11 @@ namespace RenderingSandbox
 
         private string GetReprojectionModeLabel()
         {
+            if (realDepthReprojectionEnabled)
+            {
+                return "Real Depth";
+            }
+
             if (matrixReprojectionEnabled)
             {
                 return "Matrix";
