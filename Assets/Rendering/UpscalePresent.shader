@@ -129,7 +129,17 @@ Shader "Hidden/RenderingSandbox/UpscalePresent"
                     historyUv = uv + _HistoryUvOffset.xy;
                 }
 
-                float4 history = tex2D(_HistoryTexture, historyUv);
+                float4 rawHistory = tex2D(_HistoryTexture, historyUv);
+                float4 history = rawHistory;
+
+                float rawDifferenceMagnitude = length(currentFrame.rgb - rawHistory.rgb);
+                float thresholdedRawDifference = max(0.0, rawDifferenceMagnitude - _DifferenceDebugThreshold);
+
+                // In this sandbox, "history confidence" means how comfortable the filter is
+                // with letting old history influence the final result. Large disagreement lowers
+                // that confidence and raises rejection, which helps suppress stale history.
+                float rejectionAmount = saturate(thresholdedRawDifference / max(_HistoryClampAmount, 0.0001));
+                float historyConfidence = _DebugEffectiveHistoryWeight * (1.0 - rejectionAmount);
 
                 // History clamping limits how far old history values are allowed to drift from
                 // the current frame. Ghosting often comes from stale history lingering too long,
@@ -166,8 +176,8 @@ Shader "Hidden/RenderingSandbox/UpscalePresent"
                     // The old view still looked too uniform because too many weak differences
                     // survived into the final color. This version uses a stronger threshold and
                     // a power curve so only more meaningful disagreement stays bright.
-                    float differenceMagnitude = length(currentFrame.rgb - history.rgb);
-                    float thresholdedDifference = max(0.0, differenceMagnitude - _DifferenceDebugThreshold);
+                    float differenceMagnitude = rawDifferenceMagnitude;
+                    float thresholdedDifference = thresholdedRawDifference;
                     float visibleDifference = saturate(thresholdedDifference * _DifferenceDebugScale);
                     float contrastedDifference = pow(visibleDifference, _DifferenceDebugExponent);
 
@@ -177,7 +187,17 @@ Shader "Hidden/RenderingSandbox/UpscalePresent"
                     return float4(contrastedDifference, contrastedDifference, contrastedDifference, 1.0);
                 }
 
-                return float4(_DebugEffectiveHistoryWeight, _DebugEffectiveHistoryWeight, _DebugEffectiveHistoryWeight, 1.0);
+                if (_DebugVisualizationMode < 4.5)
+                {
+                    return float4(_DebugEffectiveHistoryWeight, _DebugEffectiveHistoryWeight, _DebugEffectiveHistoryWeight, 1.0);
+                }
+
+                if (_DebugVisualizationMode < 5.5)
+                {
+                    return float4(historyConfidence, historyConfidence, historyConfidence, 1.0);
+                }
+
+                return float4(rejectionAmount, rejectionAmount, rejectionAmount, 1.0);
             }
             ENDHLSL
         }

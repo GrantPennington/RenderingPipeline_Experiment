@@ -51,6 +51,9 @@ namespace RenderingSandbox
                 $"Matrix Reprojection: {(controller.MatrixReprojectionEnabled ? "On" : "Off")}\n" +
                 $"Base History Weight: {controller.HistoryWeight:0.00}\n" +
                 $"Effective History Weight: {controller.EffectiveHistoryWeight:0.00}\n" +
+                $"Difference Threshold: {controller.DifferenceDebugThreshold:0.00}\n" +
+                $"Clamp Amount: {controller.HistoryClampAmount:0.00}\n" +
+                $"Rejection Strength: {controller.HistoryRejectionStrength:0.00}\n" +
                 $"Camera Motion: {controller.CameraMotionAmount:0.000}\n" +
                 $"History UV Offset: {controller.HistoryUvOffset.x:0.000}, {controller.HistoryUvOffset.y:0.000}\n" +
                 $"Jitter: {(controller.JitterEnabled ? "On" : "Off")}\n" +
@@ -58,7 +61,7 @@ namespace RenderingSandbox
                 $"Auto Motion: {(controller.AutoCameraMotionEnabled ? "On" : "Off")}\n" +
                 $"Render Resolution: {controller.RenderWidth}x{controller.RenderHeight}\n" +
                 $"Screen Resolution: {controller.ScreenWidth}x{controller.ScreenHeight}\n" +
-                "Keys: 1/2/3 Scale | Q/W/E Upscale | T Temporal | P Clamp | U Reprojection | I Matrix Reprojection | O Jitter | V View | B Overlay | [ ] Weight | Y Auto Motion | F1-F6 Presets";
+                "Keys: 1/2/3 Scale | Q/W/E Upscale | T Temporal | P Clamp | U Reprojection | I Matrix Reprojection | O Jitter | V View | B Overlay | [ ] Weight | J/K Threshold | N/M Rejection | Y Auto Motion | F1-F6 Presets";
         }
 
         private static string GetRenderModeName(RenderingController.RenderingMode mode)

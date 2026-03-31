@@ -39,7 +39,9 @@ namespace RenderingSandbox
             CurrentUpscaledFrame,
             HistoryBuffer,
             CurrentVsHistoryDifference,
-            EffectiveHistoryWeight
+            EffectiveHistoryWeight,
+            HistoryConfidence,
+            HistoryRejectionAmount
         }
 
         public enum OverlayDetailMode
@@ -167,6 +169,9 @@ namespace RenderingSandbox
         public float HistoryWeight => historyWeight;
         public float EffectiveHistoryWeight => effectiveHistoryWeight;
         public float CameraMotionAmount => cameraMotionAmount;
+        public float DifferenceDebugThreshold => differenceDebugThreshold;
+        public float HistoryClampAmount => historyClampAmount;
+        public float HistoryRejectionStrength => Mathf.InverseLerp(0.5f, 0.01f, historyClampAmount);
         public Vector2 HistoryUvOffset => historyUvOffset;
         public Vector2 CurrentJitterOffsetPixels => currentJitterOffsetPixels;
         public string CurrentReprojectionModeLabel => GetReprojectionModeLabel();
@@ -370,6 +375,39 @@ namespace RenderingSandbox
                 historyWeight = Mathf.Clamp(historyWeight - historyWeightStep, 0f, 0.98f);
                 ResetHistory();
                 UpdateEffectiveHistoryWeight();
+                UpdatePresentationMaterial();
+                MarkPresetCustom();
+                debugOverlay.Refresh();
+            }
+
+            if (keyboard.jKey.wasPressedThisFrame)
+            {
+                differenceDebugThreshold = Mathf.Clamp(differenceDebugThreshold - 0.01f, 0f, 0.5f);
+                UpdatePresentationMaterial();
+                MarkPresetCustom();
+                debugOverlay.Refresh();
+            }
+            else if (keyboard.kKey.wasPressedThisFrame)
+            {
+                differenceDebugThreshold = Mathf.Clamp(differenceDebugThreshold + 0.01f, 0f, 0.5f);
+                UpdatePresentationMaterial();
+                MarkPresetCustom();
+                debugOverlay.Refresh();
+            }
+
+            if (keyboard.nKey.wasPressedThisFrame)
+            {
+                // In this sandbox, the clamp amount is the allowed color distance between
+                // current and history. Larger amounts mean weaker rejection, while smaller
+                // amounts make the filter reject stale history more aggressively.
+                historyClampAmount = Mathf.Clamp(historyClampAmount + 0.01f, 0.01f, 0.5f);
+                UpdatePresentationMaterial();
+                MarkPresetCustom();
+                debugOverlay.Refresh();
+            }
+            else if (keyboard.mKey.wasPressedThisFrame)
+            {
+                historyClampAmount = Mathf.Clamp(historyClampAmount - 0.01f, 0.01f, 0.5f);
                 UpdatePresentationMaterial();
                 MarkPresetCustom();
                 debugOverlay.Refresh();
@@ -804,6 +842,10 @@ namespace RenderingSandbox
                     return "Current vs History Difference";
                 case DebugVisualizationMode.EffectiveHistoryWeight:
                     return "Effective History Weight";
+                case DebugVisualizationMode.HistoryConfidence:
+                    return "History Confidence";
+                case DebugVisualizationMode.HistoryRejectionAmount:
+                    return "History Rejection Amount";
                 default:
                     return "Final Output";
             }
@@ -1208,7 +1250,7 @@ namespace RenderingSandbox
             debugRect.anchorMax = new Vector2(0f, 1f);
             debugRect.pivot = new Vector2(0f, 1f);
             debugRect.anchoredPosition = new Vector2(16f, -16f);
-            debugRect.sizeDelta = new Vector2(680f, 350f);
+            debugRect.sizeDelta = new Vector2(700f, 390f);
 
             Text debugText = debugObject.GetComponent<Text>();
             if (debugText == null)
