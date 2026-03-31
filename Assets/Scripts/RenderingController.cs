@@ -43,7 +43,9 @@ namespace RenderingSandbox
             CurrentVsHistoryDifference,
             EffectiveHistoryWeight,
             HistoryConfidence,
-            HistoryRejectionAmount
+            HistoryRejectionAmount,
+            ReprojectionValidity,
+            HistoryTrustMask
         }
 
         public enum OverlayDetailMode
@@ -78,6 +80,7 @@ namespace RenderingSandbox
         [SerializeField] private bool matrixReprojectionEnabled;
         [SerializeField, Range(0f, 1f)] private float approximateDepth01 = 0.55f;
         [SerializeField] private bool realDepthReprojectionEnabled;
+        [SerializeField] private bool reprojectionValidityMaskingEnabled = true;
 
         [Header("Jitter")]
         [SerializeField] private bool jitterEnabled;
@@ -114,6 +117,7 @@ namespace RenderingSandbox
         private static readonly int PreviousViewProjectionId = Shader.PropertyToID("_PreviousViewProjection");
         private static readonly int HistoryClampingEnabledId = Shader.PropertyToID("_HistoryClampingEnabled");
         private static readonly int HistoryClampAmountId = Shader.PropertyToID("_HistoryClampAmount");
+        private static readonly int ReprojectionValidityMaskingEnabledId = Shader.PropertyToID("_ReprojectionValidityMaskingEnabled");
         private static readonly int DebugVisualizationModeId = Shader.PropertyToID("_DebugVisualizationMode");
         private static readonly int DebugEffectiveHistoryWeightId = Shader.PropertyToID("_DebugEffectiveHistoryWeight");
         private static readonly int DifferenceDebugScaleId = Shader.PropertyToID("_DifferenceDebugScale");
@@ -163,6 +167,7 @@ namespace RenderingSandbox
         public bool SimpleReprojectionEnabled => simpleReprojectionEnabled;
         public bool MatrixReprojectionEnabled => matrixReprojectionEnabled;
         public bool RealDepthReprojectionEnabled => realDepthReprojectionEnabled;
+        public bool ReprojectionValidityMaskingEnabled => reprojectionValidityMaskingEnabled;
         public bool JitterEnabled => jitterEnabled;
         public bool HistoryClampingEnabled => historyClampingEnabled;
         public bool AutoCameraMotionEnabled => autoCameraMotionEnabled;
@@ -466,6 +471,15 @@ namespace RenderingSandbox
 
             if (keyboard.oKey.wasPressedThisFrame)
             {
+                reprojectionValidityMaskingEnabled = !reprojectionValidityMaskingEnabled;
+                ResetHistory();
+                UpdatePresentationMaterial();
+                MarkPresetCustom();
+                debugOverlay.Refresh();
+            }
+
+            if (keyboard.hKey.wasPressedThisFrame)
+            {
                 jitterEnabled = !jitterEnabled;
                 jitterFrameIndex = 0;
                 currentJitterOffsetPixels = Vector2.zero;
@@ -721,6 +735,7 @@ namespace RenderingSandbox
                     simpleReprojectionEnabled = false;
                     matrixReprojectionEnabled = false;
                     realDepthReprojectionEnabled = false;
+                    reprojectionValidityMaskingEnabled = true;
                     jitterEnabled = false;
                     historyClampingEnabled = false;
                     SetAutoCameraMotion(false);
@@ -733,6 +748,7 @@ namespace RenderingSandbox
                     simpleReprojectionEnabled = false;
                     matrixReprojectionEnabled = false;
                     realDepthReprojectionEnabled = false;
+                    reprojectionValidityMaskingEnabled = true;
                     jitterEnabled = false;
                     historyClampingEnabled = false;
                     SetAutoCameraMotion(true);
@@ -745,6 +761,7 @@ namespace RenderingSandbox
                     simpleReprojectionEnabled = false;
                     matrixReprojectionEnabled = false;
                     realDepthReprojectionEnabled = false;
+                    reprojectionValidityMaskingEnabled = true;
                     jitterEnabled = false;
                     historyClampingEnabled = false;
                     SetAutoCameraMotion(true);
@@ -757,6 +774,7 @@ namespace RenderingSandbox
                     simpleReprojectionEnabled = true;
                     matrixReprojectionEnabled = false;
                     realDepthReprojectionEnabled = false;
+                    reprojectionValidityMaskingEnabled = true;
                     jitterEnabled = false;
                     historyClampingEnabled = false;
                     SetAutoCameraMotion(true);
@@ -769,6 +787,7 @@ namespace RenderingSandbox
                     simpleReprojectionEnabled = false;
                     matrixReprojectionEnabled = true;
                     realDepthReprojectionEnabled = false;
+                    reprojectionValidityMaskingEnabled = true;
                     jitterEnabled = false;
                     historyClampingEnabled = false;
                     SetAutoCameraMotion(true);
@@ -781,6 +800,7 @@ namespace RenderingSandbox
                     simpleReprojectionEnabled = false;
                     matrixReprojectionEnabled = false;
                     realDepthReprojectionEnabled = false;
+                    reprojectionValidityMaskingEnabled = true;
                     jitterEnabled = true;
                     historyClampingEnabled = false;
                     SetAutoCameraMotion(true);
@@ -878,9 +898,13 @@ namespace RenderingSandbox
                 case DebugVisualizationMode.EffectiveHistoryWeight:
                     return "Effective History Weight";
                 case DebugVisualizationMode.HistoryConfidence:
-                    return "History Confidence";
+                    return "Final Blend Confidence";
                 case DebugVisualizationMode.HistoryRejectionAmount:
                     return "History Rejection Amount";
+                case DebugVisualizationMode.ReprojectionValidity:
+                    return "Geometric Reprojection Validity";
+                case DebugVisualizationMode.HistoryTrustMask:
+                    return "History Trust Mask";
                 default:
                     return "Final Output";
             }
@@ -961,6 +985,7 @@ namespace RenderingSandbox
                 upscaleMaterial.SetMatrix(PreviousViewProjectionId, previousViewProjectionMatrix);
                 upscaleMaterial.SetFloat(HistoryClampingEnabledId, 0f);
                 upscaleMaterial.SetFloat(HistoryClampAmountId, historyClampAmount);
+                upscaleMaterial.SetFloat(ReprojectionValidityMaskingEnabledId, reprojectionValidityMaskingEnabled ? 1f : 0f);
                 upscaleMaterial.SetFloat(DebugVisualizationModeId, (float)debugVisualizationMode);
                 upscaleMaterial.SetFloat(DebugEffectiveHistoryWeightId, effectiveHistoryWeight);
                 upscaleMaterial.SetFloat(DifferenceDebugScaleId, differenceDebugScale);
@@ -992,6 +1017,7 @@ namespace RenderingSandbox
             upscaleMaterial.SetMatrix(PreviousViewProjectionId, previousViewProjectionMatrix);
             upscaleMaterial.SetFloat(HistoryClampingEnabledId, historyClampingEnabled ? 1f : 0f);
             upscaleMaterial.SetFloat(HistoryClampAmountId, historyClampAmount);
+            upscaleMaterial.SetFloat(ReprojectionValidityMaskingEnabledId, reprojectionValidityMaskingEnabled ? 1f : 0f);
             upscaleMaterial.SetFloat(DebugVisualizationModeId, (float)debugVisualizationMode);
             upscaleMaterial.SetFloat(DebugEffectiveHistoryWeightId, effectiveHistoryWeight);
             upscaleMaterial.SetFloat(DifferenceDebugScaleId, differenceDebugScale);

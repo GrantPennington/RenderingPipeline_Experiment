@@ -53,6 +53,7 @@ Shader "Hidden/RenderingSandbox/UpscalePresent"
             float4x4 _PreviousViewProjection;
             float _HistoryClampingEnabled;
             float _HistoryClampAmount;
+            float _ReprojectionValidityMaskingEnabled;
             float _DebugVisualizationMode;
             float _DebugEffectiveHistoryWeight;
             float _DifferenceDebugScale;
@@ -100,6 +101,11 @@ Shader "Hidden/RenderingSandbox/UpscalePresent"
                 }
 
                 float2 historyUv = uv;
+                float sceneDepth = tex2D(_CameraDepthTexture, uv).r;
+                float depthTexelX = 1.0 / max(_ScreenParams.x, 1.0);
+                float depthTexelY = 1.0 / max(_ScreenParams.y, 1.0);
+                float reprojectionValidity = 1.0;
+                float previousClipW = 1.0;
 
                 if (_ReprojectionMode > 2.5)
                 {
@@ -108,7 +114,6 @@ Shader "Hidden/RenderingSandbox/UpscalePresent"
                     // the whole screen. That makes camera-motion reprojection more spatially
                     // coherent, even though object motion and occlusion changes can still fail
                     // without motion vectors and dedicated disocclusion handling.
-                    float sceneDepth = tex2D(_CameraDepthTexture, uv).r;
                     float2 ndc = uv * 2.0 - 1.0;
                     float clipDepth = UNITY_NEAR_CLIP_VALUE < 0.0 ? (sceneDepth * 2.0 - 1.0) : sceneDepth;
                     float4 clipPosition = float4(ndc, clipDepth, 1.0);
@@ -120,6 +125,7 @@ Shader "Hidden/RenderingSandbox/UpscalePresent"
                     worldPosition /= max(worldPosition.w, 0.0001);
 
                     float4 previousClip = mul(_PreviousViewProjection, worldPosition);
+                    previousClipW = previousClip.w;
                     historyUv = (previousClip.xy / max(previousClip.w, 0.0001)) * 0.5 + 0.5;
                 }
                 else if (_ReprojectionMode > 1.5)
@@ -141,7 +147,8 @@ Shader "Hidden/RenderingSandbox/UpscalePresent"
 
                     float4 worldPosition = lerp(worldNear, worldFar, _ApproximateDepth01);
                     float4 previousClip = mul(_PreviousViewProjection, worldPosition);
-                    historyUv = (previousClip.xy / previousClip.w) * 0.5 + 0.5;
+                    previousClipW = previousClip.w;
+                    historyUv = (previousClip.xy / max(previousClip.w, 0.0001)) * 0.5 + 0.5;
                 }
                 else if (_ReprojectionMode > 0.5)
                 {
@@ -151,7 +158,48 @@ Shader "Hidden/RenderingSandbox/UpscalePresent"
                     historyUv = uv + _HistoryUvOffset.xy;
                 }
 
-                float4 rawHistory = tex2D(_HistoryTexture, historyUv);
+                // Reprojection can still be wrong even with depth because new surfaces can
+                // become visible, old surfaces can disappear, and object motion is not tracked.
+                // This first-pass validity mask treats off-screen samples, unusable depth, and
+                // strong current-frame depth discontinuities as signs that history is risky.
+                if (_ReprojectionValidityMaskingEnabled > 0.5)
+                {
+                    float2 historyUvInside = step(float2(0.0, 0.0), historyUv) * step(historyUv, float2(1.0, 1.0));
+                    reprojectionValidity *= historyUvInside.x * historyUvInside.y;
+
+                    // A hard inside/outside test is not very informative on its own. This small
+                    // border fade tightens the heuristic so pixels near the reprojection edge
+                    // also lose trust instead of staying almost pure white in the debug view.
+                    float2 historyUvEdgeDistance = min(historyUv, 1.0 - historyUv);
+                    float edgeValidity = saturate(min(historyUvEdgeDistance.x, historyUvEdgeDistance.y) * 48.0);
+                    reprojectionValidity *= edgeValidity;
+
+                    if (_ReprojectionMode > 2.5)
+                    {
+                        float depthValid = step(0.0001, sceneDepth) * step(sceneDepth, 0.9999);
+                        reprojectionValidity *= depthValid;
+                    }
+
+                    if (_ReprojectionMode > 1.5)
+                    {
+                        float depthLeft = tex2D(_CameraDepthTexture, uv + float2(-depthTexelX, 0.0)).r;
+                        float depthRight = tex2D(_CameraDepthTexture, uv + float2(depthTexelX, 0.0)).r;
+                        float depthUp = tex2D(_CameraDepthTexture, uv + float2(0.0, depthTexelY)).r;
+                        float depthDown = tex2D(_CameraDepthTexture, uv + float2(0.0, -depthTexelY)).r;
+
+                        float localDepthEdge =
+                            max(abs(sceneDepth - depthLeft), abs(sceneDepth - depthRight));
+                        localDepthEdge =
+                            max(localDepthEdge, max(abs(sceneDepth - depthUp), abs(sceneDepth - depthDown)));
+
+                        float depthEdgeRejection = smoothstep(0.0015, 0.008, localDepthEdge);
+                        reprojectionValidity *= (1.0 - depthEdgeRejection);
+                        reprojectionValidity *= step(0.0001, previousClipW);
+                    }
+                }
+
+                float2 safeHistoryUv = saturate(historyUv);
+                float4 rawHistory = tex2D(_HistoryTexture, safeHistoryUv);
                 float4 history = rawHistory;
 
                 float rawDifferenceMagnitude = length(currentFrame.rgb - rawHistory.rgb);
@@ -161,7 +209,8 @@ Shader "Hidden/RenderingSandbox/UpscalePresent"
                 // with letting old history influence the final result. Large disagreement lowers
                 // that confidence and raises rejection, which helps suppress stale history.
                 float rejectionAmount = saturate(thresholdedRawDifference / max(_HistoryClampAmount, 0.0001));
-                float historyConfidence = _DebugEffectiveHistoryWeight * (1.0 - rejectionAmount);
+                float historyConfidence = (_DebugEffectiveHistoryWeight * reprojectionValidity) * (1.0 - rejectionAmount);
+                float historyTrustMask = reprojectionValidity * (1.0 - rejectionAmount);
 
                 // History clamping limits how far old history values are allowed to drift from
                 // the current frame. Ghosting often comes from stale history lingering too long,
@@ -173,7 +222,9 @@ Shader "Hidden/RenderingSandbox/UpscalePresent"
                     history = clamp(history, minAllowed, maxAllowed);
                 }
 
-                float4 finalOutput = lerp(currentFrame, history, _HistoryWeight);
+                float finalHistoryWeight = _HistoryWeight * reprojectionValidity;
+                float finalHistoryTrust = _HistoryWeight > 0.0001 ? finalHistoryWeight / _HistoryWeight : 0.0;
+                float4 finalOutput = lerp(currentFrame, history, finalHistoryWeight);
 
                 // Debug visualization is useful because temporal effects can be subtle. These
                 // views expose the internal signals so it is easier to see what the sandbox is
@@ -219,7 +270,22 @@ Shader "Hidden/RenderingSandbox/UpscalePresent"
                     return float4(historyConfidence, historyConfidence, historyConfidence, 1.0);
                 }
 
-                return float4(rejectionAmount, rejectionAmount, rejectionAmount, 1.0);
+                if (_DebugVisualizationMode < 6.5)
+                {
+                    return float4(rejectionAmount, rejectionAmount, rejectionAmount, 1.0);
+                }
+
+                // Geometric reprojection validity can legitimately stay near white across stable
+                // pixels because it only answers "did the reprojected sample land somewhere
+                // plausible?" The more informative trust views also fold in rejection logic.
+                if (_DebugVisualizationMode < 7.5)
+                {
+                    return float4(finalHistoryTrust, finalHistoryTrust, finalHistoryTrust, 1.0);
+                }
+
+                // This view shows rejection-aware history trust without the global temporal
+                // weight. It is often easier to read than the geometric validity mask alone.
+                return float4(historyTrustMask, historyTrustMask, historyTrustMask, 1.0);
             }
             ENDHLSL
         }
