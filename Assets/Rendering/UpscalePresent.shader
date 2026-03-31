@@ -52,6 +52,11 @@ Shader "Hidden/RenderingSandbox/UpscalePresent"
             float4x4 _PreviousViewProjection;
             float _HistoryClampingEnabled;
             float _HistoryClampAmount;
+            float _DebugVisualizationMode;
+            float _DebugEffectiveHistoryWeight;
+            float _DifferenceDebugScale;
+            float _DifferenceDebugThreshold;
+            float _DifferenceDebugExponent;
 
             Varyings Vert(Attributes input)
             {
@@ -136,7 +141,43 @@ Shader "Hidden/RenderingSandbox/UpscalePresent"
                     history = clamp(history, minAllowed, maxAllowed);
                 }
 
-                return lerp(currentFrame, history, _HistoryWeight);
+                float4 finalOutput = lerp(currentFrame, history, _HistoryWeight);
+
+                // Debug visualization is useful because temporal effects can be subtle. These
+                // views expose the internal signals so it is easier to see what the sandbox is
+                // actually blending and why the final image behaves the way it does.
+                if (_DebugVisualizationMode < 0.5)
+                {
+                    return finalOutput;
+                }
+
+                if (_DebugVisualizationMode < 1.5)
+                {
+                    return currentFrame;
+                }
+
+                if (_DebugVisualizationMode < 2.5)
+                {
+                    return history;
+                }
+
+                if (_DebugVisualizationMode < 3.5)
+                {
+                    // The old view still looked too uniform because too many weak differences
+                    // survived into the final color. This version uses a stronger threshold and
+                    // a power curve so only more meaningful disagreement stays bright.
+                    float differenceMagnitude = length(currentFrame.rgb - history.rgb);
+                    float thresholdedDifference = max(0.0, differenceMagnitude - _DifferenceDebugThreshold);
+                    float visibleDifference = saturate(thresholdedDifference * _DifferenceDebugScale);
+                    float contrastedDifference = pow(visibleDifference, _DifferenceDebugExponent);
+
+                    // Black means current and history largely agree. Bright grayscale means
+                    // strong disagreement, which makes moving edges and stale history regions
+                    // easier to isolate without tinting the whole frame.
+                    return float4(contrastedDifference, contrastedDifference, contrastedDifference, 1.0);
+                }
+
+                return float4(_DebugEffectiveHistoryWeight, _DebugEffectiveHistoryWeight, _DebugEffectiveHistoryWeight, 1.0);
             }
             ENDHLSL
         }

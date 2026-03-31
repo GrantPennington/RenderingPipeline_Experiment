@@ -27,12 +27,25 @@ namespace RenderingSandbox
                 return;
             }
 
+            if (controller.CurrentOverlayDetailMode == RenderingController.OverlayDetailMode.Minimal)
+            {
+                label.text =
+                    $"Preset: {controller.CurrentPresetName}\n" +
+                    $"Render Scale: {GetRenderModeName(controller.CurrentMode)}\n" +
+                    $"Upscale: {GetUpscaleModeName(controller.CurrentUpscaleMode)}\n" +
+                    $"Temporal: {(controller.TemporalAccumulationEnabled ? "On" : "Off")}\n" +
+                    $"Debug View: {controller.CurrentDebugVisualizationModeLabel}\n" +
+                    "Keys: V View | B Overlay | F1-F6 Presets";
+                return;
+            }
+
             label.text =
                 $"Preset: {controller.CurrentPresetName}\n" +
                 $"Render Scale: {GetRenderModeName(controller.CurrentMode)}\n" +
                 $"Upscale: {GetUpscaleModeName(controller.CurrentUpscaleMode)}\n" +
                 $"Temporal: {(controller.TemporalAccumulationEnabled ? "On" : "Off")}\n" +
                 $"History Clamping: {(controller.HistoryClampingEnabled ? "On" : "Off")}\n" +
+                $"Debug View: {controller.CurrentDebugVisualizationModeLabel}\n" +
                 $"Reprojection Mode: {controller.CurrentReprojectionModeLabel}\n" +
                 $"Reprojection: {(controller.SimpleReprojectionEnabled ? "On" : "Off")}\n" +
                 $"Matrix Reprojection: {(controller.MatrixReprojectionEnabled ? "On" : "Off")}\n" +
@@ -45,7 +58,7 @@ namespace RenderingSandbox
                 $"Auto Motion: {(controller.AutoCameraMotionEnabled ? "On" : "Off")}\n" +
                 $"Render Resolution: {controller.RenderWidth}x{controller.RenderHeight}\n" +
                 $"Screen Resolution: {controller.ScreenWidth}x{controller.ScreenHeight}\n" +
-                "Keys: 1/2/3 Scale | Q/W/E Upscale | T Temporal | P Clamp | U Reprojection | I Matrix Reprojection | O Jitter | [ ] Weight | Y Auto Motion | F1-F6 Presets";
+                "Keys: 1/2/3 Scale | Q/W/E Upscale | T Temporal | P Clamp | U Reprojection | I Matrix Reprojection | O Jitter | V View | B Overlay | [ ] Weight | Y Auto Motion | F1-F6 Presets";
         }
 
         private static string GetRenderModeName(RenderingController.RenderingMode mode)

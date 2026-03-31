@@ -33,6 +33,21 @@ namespace RenderingSandbox
             JitteredTemporal
         }
 
+        public enum DebugVisualizationMode
+        {
+            FinalOutput,
+            CurrentUpscaledFrame,
+            HistoryBuffer,
+            CurrentVsHistoryDifference,
+            EffectiveHistoryWeight
+        }
+
+        public enum OverlayDetailMode
+        {
+            Minimal,
+            Full
+        }
+
         [Header("Startup")]
         [SerializeField] private RenderingMode startingMode = RenderingMode.Native;
         [SerializeField] private UpscaleMode startingUpscaleMode = UpscaleMode.Bilinear;
@@ -67,6 +82,13 @@ namespace RenderingSandbox
         [SerializeField] private bool historyClampingEnabled;
         [SerializeField, Range(0.01f, 0.5f)] private float historyClampAmount = 0.12f;
 
+        [Header("Debug")]
+        [SerializeField] private DebugVisualizationMode debugVisualizationMode = DebugVisualizationMode.FinalOutput;
+        [SerializeField] private OverlayDetailMode overlayDetailMode = OverlayDetailMode.Full;
+        [SerializeField, Range(1f, 64f)] private float differenceDebugScale = 18f;
+        [SerializeField, Range(0f, 0.5f)] private float differenceDebugThreshold = 0.12f;
+        [SerializeField, Range(0.5f, 4f)] private float differenceDebugExponent = 2.2f;
+
         [Header("Auto Camera Motion")]
         [SerializeField] private bool autoCameraMotionEnabled;
         [SerializeField] private Vector3 autoMotionCenter = Vector3.zero;
@@ -87,6 +109,11 @@ namespace RenderingSandbox
         private static readonly int PreviousViewProjectionId = Shader.PropertyToID("_PreviousViewProjection");
         private static readonly int HistoryClampingEnabledId = Shader.PropertyToID("_HistoryClampingEnabled");
         private static readonly int HistoryClampAmountId = Shader.PropertyToID("_HistoryClampAmount");
+        private static readonly int DebugVisualizationModeId = Shader.PropertyToID("_DebugVisualizationMode");
+        private static readonly int DebugEffectiveHistoryWeightId = Shader.PropertyToID("_DebugEffectiveHistoryWeight");
+        private static readonly int DifferenceDebugScaleId = Shader.PropertyToID("_DifferenceDebugScale");
+        private static readonly int DifferenceDebugThresholdId = Shader.PropertyToID("_DifferenceDebugThreshold");
+        private static readonly int DifferenceDebugExponentId = Shader.PropertyToID("_DifferenceDebugExponent");
         private const int PresentationLayer = 31;
 
         private Camera targetCamera;
@@ -134,6 +161,9 @@ namespace RenderingSandbox
         public bool HistoryClampingEnabled => historyClampingEnabled;
         public bool AutoCameraMotionEnabled => autoCameraMotionEnabled;
         public string CurrentPresetName => GetPresetLabel(currentPreset);
+        public DebugVisualizationMode CurrentDebugVisualizationMode => debugVisualizationMode;
+        public OverlayDetailMode CurrentOverlayDetailMode => overlayDetailMode;
+        public string CurrentDebugVisualizationModeLabel => GetDebugVisualizationModeLabel(debugVisualizationMode);
         public float HistoryWeight => historyWeight;
         public float EffectiveHistoryWeight => effectiveHistoryWeight;
         public float CameraMotionAmount => cameraMotionAmount;
@@ -400,6 +430,22 @@ namespace RenderingSandbox
                 ResetHistory();
                 UpdatePresentationMaterial();
                 MarkPresetCustom();
+                debugOverlay.Refresh();
+            }
+
+            if (keyboard.vKey.wasPressedThisFrame)
+            {
+                CycleDebugVisualizationMode();
+                UpdatePresentationMaterial();
+                debugOverlay.Refresh();
+            }
+
+            if (keyboard.bKey.wasPressedThisFrame)
+            {
+                overlayDetailMode =
+                    overlayDetailMode == OverlayDetailMode.Full
+                        ? OverlayDetailMode.Minimal
+                        : OverlayDetailMode.Full;
                 debugOverlay.Refresh();
             }
 
@@ -740,6 +786,29 @@ namespace RenderingSandbox
             }
         }
 
+        private void CycleDebugVisualizationMode()
+        {
+            int modeCount = System.Enum.GetValues(typeof(DebugVisualizationMode)).Length;
+            debugVisualizationMode = (DebugVisualizationMode)(((int)debugVisualizationMode + 1) % modeCount);
+        }
+
+        private string GetDebugVisualizationModeLabel(DebugVisualizationMode mode)
+        {
+            switch (mode)
+            {
+                case DebugVisualizationMode.CurrentUpscaledFrame:
+                    return "Current Upscaled Frame";
+                case DebugVisualizationMode.HistoryBuffer:
+                    return "History Buffer";
+                case DebugVisualizationMode.CurrentVsHistoryDifference:
+                    return "Current vs History Difference";
+                case DebugVisualizationMode.EffectiveHistoryWeight:
+                    return "Effective History Weight";
+                default:
+                    return "Final Output";
+            }
+        }
+
         private void ApplyJitterToCameraProjection()
         {
             if (targetCamera == null)
@@ -815,6 +884,11 @@ namespace RenderingSandbox
                 upscaleMaterial.SetMatrix(PreviousViewProjectionId, previousViewProjectionMatrix);
                 upscaleMaterial.SetFloat(HistoryClampingEnabledId, 0f);
                 upscaleMaterial.SetFloat(HistoryClampAmountId, historyClampAmount);
+                upscaleMaterial.SetFloat(DebugVisualizationModeId, (float)debugVisualizationMode);
+                upscaleMaterial.SetFloat(DebugEffectiveHistoryWeightId, effectiveHistoryWeight);
+                upscaleMaterial.SetFloat(DifferenceDebugScaleId, differenceDebugScale);
+                upscaleMaterial.SetFloat(DifferenceDebugThresholdId, differenceDebugThreshold);
+                upscaleMaterial.SetFloat(DifferenceDebugExponentId, differenceDebugExponent);
                 return;
             }
 
@@ -841,6 +915,11 @@ namespace RenderingSandbox
             upscaleMaterial.SetMatrix(PreviousViewProjectionId, previousViewProjectionMatrix);
             upscaleMaterial.SetFloat(HistoryClampingEnabledId, historyClampingEnabled ? 1f : 0f);
             upscaleMaterial.SetFloat(HistoryClampAmountId, historyClampAmount);
+            upscaleMaterial.SetFloat(DebugVisualizationModeId, (float)debugVisualizationMode);
+            upscaleMaterial.SetFloat(DebugEffectiveHistoryWeightId, effectiveHistoryWeight);
+            upscaleMaterial.SetFloat(DifferenceDebugScaleId, differenceDebugScale);
+            upscaleMaterial.SetFloat(DifferenceDebugThresholdId, differenceDebugThreshold);
+            upscaleMaterial.SetFloat(DifferenceDebugExponentId, differenceDebugExponent);
         }
 
         private void EnsureHistoryTextures(int width, int height)
@@ -1129,7 +1208,7 @@ namespace RenderingSandbox
             debugRect.anchorMax = new Vector2(0f, 1f);
             debugRect.pivot = new Vector2(0f, 1f);
             debugRect.anchoredPosition = new Vector2(16f, -16f);
-            debugRect.sizeDelta = new Vector2(650f, 320f);
+            debugRect.sizeDelta = new Vector2(680f, 350f);
 
             Text debugText = debugObject.GetComponent<Text>();
             if (debugText == null)
