@@ -7,6 +7,7 @@ Shader "Hidden/RenderingSandbox/UpscalePresent"
         _SharpenStrength("Sharpen Strength", Range(0, 1.5)) = 0
         _HistoryWeight("History Weight", Range(0, 0.98)) = 0.85
         _HistoryUvOffset("History UV Offset", Vector) = (0, 0, 0, 0)
+        _ApproximateDepth01("Approximate Depth 0-1", Range(0, 1)) = 0.55
     }
 
     SubShader
@@ -44,6 +45,10 @@ Shader "Hidden/RenderingSandbox/UpscalePresent"
             float _HasHistory;
             float _HistoryWeight;
             float4 _HistoryUvOffset;
+            float _ReprojectionMode;
+            float _ApproximateDepth01;
+            float4x4 _CurrentInverseViewProjection;
+            float4x4 _PreviousViewProjection;
 
             Varyings Vert(Attributes input)
             {
@@ -85,11 +90,37 @@ Shader "Hidden/RenderingSandbox/UpscalePresent"
                     return currentFrame;
                 }
 
-                // Same-UV history sampling fails during motion because the old frame usually
-                // belongs at a different screen position. This slice applies one global UV
-                // offset to the history sample as a simple reprojection experiment.
-                // Full solutions use motion vectors and depth so different pixels can move differently.
-                float2 historyUv = uv + _HistoryUvOffset.xy;
+                float2 historyUv = uv;
+
+                if (_ReprojectionMode > 1.5)
+                {
+                    // Global UV offsets are only a rough approximation because every pixel moves
+                    // differently as depth changes. Matrix reprojection tries to do something more
+                    // physically motivated: reconstruct a point from the current screen position,
+                    // then project that point into the previous frame before sampling history.
+                    // This slice still uses an approximate depth plane, so it is educational rather
+                    // than correct. Full solutions use scene depth plus motion vectors.
+                    float2 ndc = uv * 2.0 - 1.0;
+                    float4 clipNear = float4(ndc, -1.0, 1.0);
+                    float4 clipFar = float4(ndc, 1.0, 1.0);
+
+                    float4 worldNear = mul(_CurrentInverseViewProjection, clipNear);
+                    float4 worldFar = mul(_CurrentInverseViewProjection, clipFar);
+                    worldNear /= worldNear.w;
+                    worldFar /= worldFar.w;
+
+                    float4 worldPosition = lerp(worldNear, worldFar, _ApproximateDepth01);
+                    float4 previousClip = mul(_PreviousViewProjection, worldPosition);
+                    historyUv = (previousClip.xy / previousClip.w) * 0.5 + 0.5;
+                }
+                else if (_ReprojectionMode > 0.5)
+                {
+                    // Same-UV history sampling fails during motion because the old frame usually
+                    // belongs at a different screen position. This simple mode applies one
+                    // uniform offset to the whole screen as an intermediate experiment.
+                    historyUv = uv + _HistoryUvOffset.xy;
+                }
+
                 float4 history = tex2D(_HistoryTexture, historyUv);
                 return lerp(currentFrame, history, _HistoryWeight);
             }

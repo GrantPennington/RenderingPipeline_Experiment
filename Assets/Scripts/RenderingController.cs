@@ -44,6 +44,10 @@ namespace RenderingSandbox
         [SerializeField] private float translationUvScale = 0.12f;
         [SerializeField] private float rotationUvScale = 0.0025f;
 
+        [Header("Matrix Reprojection")]
+        [SerializeField] private bool matrixReprojectionEnabled;
+        [SerializeField, Range(0f, 1f)] private float approximateDepth01 = 0.55f;
+
         [Header("Auto Camera Motion")]
         [SerializeField] private bool autoCameraMotionEnabled;
         [SerializeField] private Vector3 autoMotionCenter = Vector3.zero;
@@ -58,6 +62,10 @@ namespace RenderingSandbox
         private static readonly int HasHistoryId = Shader.PropertyToID("_HasHistory");
         private static readonly int HistoryWeightId = Shader.PropertyToID("_HistoryWeight");
         private static readonly int HistoryUvOffsetId = Shader.PropertyToID("_HistoryUvOffset");
+        private static readonly int ReprojectionModeId = Shader.PropertyToID("_ReprojectionMode");
+        private static readonly int ApproximateDepth01Id = Shader.PropertyToID("_ApproximateDepth01");
+        private static readonly int CurrentInverseViewProjectionId = Shader.PropertyToID("_CurrentInverseViewProjection");
+        private static readonly int PreviousViewProjectionId = Shader.PropertyToID("_PreviousViewProjection");
         private const int PresentationLayer = 31;
 
         private Camera targetCamera;
@@ -82,6 +90,8 @@ namespace RenderingSandbox
         private bool autoMotionPoseInitialized;
         private Vector3 lastPositionDelta;
         private Vector2 historyUvOffset;
+        private Matrix4x4 currentInverseViewProjectionMatrix;
+        private Matrix4x4 previousViewProjectionMatrix;
 
         private RenderingMode currentMode;
         private UpscaleMode currentUpscaleMode;
@@ -94,11 +104,13 @@ namespace RenderingSandbox
         public UpscaleMode CurrentUpscaleMode => currentUpscaleMode;
         public bool TemporalAccumulationEnabled => temporalAccumulationEnabled;
         public bool SimpleReprojectionEnabled => simpleReprojectionEnabled;
+        public bool MatrixReprojectionEnabled => matrixReprojectionEnabled;
         public bool AutoCameraMotionEnabled => autoCameraMotionEnabled;
         public float HistoryWeight => historyWeight;
         public float EffectiveHistoryWeight => effectiveHistoryWeight;
         public float CameraMotionAmount => cameraMotionAmount;
         public Vector2 HistoryUvOffset => historyUvOffset;
+        public string CurrentReprojectionModeLabel => GetReprojectionModeLabel();
         public int RenderWidth => currentMode == RenderingMode.Native ? Screen.width : currentRenderWidth;
         public int RenderHeight => currentMode == RenderingMode.Native ? Screen.height : currentRenderHeight;
         public int ScreenWidth => Screen.width;
@@ -129,6 +141,8 @@ namespace RenderingSandbox
             EnsureOverlayExists();
             lastCameraPosition = targetCamera.transform.position;
             lastCameraRotation = targetCamera.transform.rotation;
+            UpdateCurrentMatrices();
+            previousViewProjectionMatrix = GetCurrentViewProjectionMatrix();
             effectiveHistoryWeight = historyWeight;
             SetUpscaleMode(startingUpscaleMode, true);
             SetRenderingMode(startingMode, true);
@@ -300,6 +314,16 @@ namespace RenderingSandbox
             {
                 simpleReprojectionEnabled = !simpleReprojectionEnabled;
                 ResetHistory();
+                UpdatePresentationMaterial();
+                debugOverlay.Refresh();
+            }
+
+            if (keyboard.iKey.wasPressedThisFrame)
+            {
+                matrixReprojectionEnabled = !matrixReprojectionEnabled;
+                ResetHistory();
+                UpdateCurrentMatrices();
+                previousViewProjectionMatrix = GetCurrentViewProjectionMatrix();
                 UpdatePresentationMaterial();
                 debugOverlay.Refresh();
             }
@@ -484,6 +508,10 @@ namespace RenderingSandbox
                 upscaleMaterial.SetFloat(HasHistoryId, 0f);
                 upscaleMaterial.SetFloat(HistoryWeightId, effectiveHistoryWeight);
                 upscaleMaterial.SetVector(HistoryUvOffsetId, Vector4.zero);
+                upscaleMaterial.SetFloat(ReprojectionModeId, 0f);
+                upscaleMaterial.SetFloat(ApproximateDepth01Id, approximateDepth01);
+                upscaleMaterial.SetMatrix(CurrentInverseViewProjectionId, currentInverseViewProjectionMatrix);
+                upscaleMaterial.SetMatrix(PreviousViewProjectionId, previousViewProjectionMatrix);
                 return;
             }
 
@@ -504,6 +532,10 @@ namespace RenderingSandbox
             upscaleMaterial.SetFloat(HasHistoryId, hasHistoryFrame ? 1f : 0f);
             upscaleMaterial.SetFloat(HistoryWeightId, effectiveHistoryWeight);
             upscaleMaterial.SetVector(HistoryUvOffsetId, historyUvOffset);
+            upscaleMaterial.SetFloat(ReprojectionModeId, GetReprojectionModeValue());
+            upscaleMaterial.SetFloat(ApproximateDepth01Id, approximateDepth01);
+            upscaleMaterial.SetMatrix(CurrentInverseViewProjectionId, currentInverseViewProjectionMatrix);
+            upscaleMaterial.SetMatrix(PreviousViewProjectionId, previousViewProjectionMatrix);
         }
 
         private void EnsureHistoryTextures(int width, int height)
@@ -579,6 +611,8 @@ namespace RenderingSandbox
             lastCameraRotation = targetCamera.transform.rotation;
             lastPositionDelta = Vector3.zero;
             historyUvOffset = Vector2.zero;
+            UpdateCurrentMatrices();
+            previousViewProjectionMatrix = GetCurrentViewProjectionMatrix();
             ResetHistory();
             UpdateEffectiveHistoryWeight();
             UpdatePresentationMaterial();
@@ -613,6 +647,7 @@ namespace RenderingSandbox
             float rotationDelta = Quaternion.Angle(currentRotation, lastCameraRotation) * rotationContributionScale;
             cameraMotionAmount = positionDelta + rotationDelta;
 
+            UpdateCurrentMatrices();
             UpdateHistoryUvOffset(currentRotation);
 
             // Naive temporal accumulation ghosts because it keeps trusting old pixels even when
@@ -669,6 +704,44 @@ namespace RenderingSandbox
             historyUvOffset = translationOffset + rotationOffset;
         }
 
+        private void UpdateCurrentMatrices()
+        {
+            Matrix4x4 currentViewProjection = GetCurrentViewProjectionMatrix();
+            currentInverseViewProjectionMatrix = currentViewProjection.inverse;
+        }
+
+        private Matrix4x4 GetCurrentViewProjectionMatrix()
+        {
+            Matrix4x4 viewMatrix = targetCamera.worldToCameraMatrix;
+            Matrix4x4 projectionMatrix = GL.GetGPUProjectionMatrix(targetCamera.projectionMatrix, false);
+            return projectionMatrix * viewMatrix;
+        }
+
+        private float GetReprojectionModeValue()
+        {
+            if (matrixReprojectionEnabled)
+            {
+                return 2f;
+            }
+
+            return simpleReprojectionEnabled ? 1f : 0f;
+        }
+
+        private string GetReprojectionModeLabel()
+        {
+            if (matrixReprojectionEnabled)
+            {
+                return "Matrix";
+            }
+
+            if (simpleReprojectionEnabled)
+            {
+                return "Simple Offset";
+            }
+
+            return "Off";
+        }
+
         private void ReleaseTexture(ref RenderTexture texture)
         {
             if (texture == null)
@@ -713,6 +786,7 @@ namespace RenderingSandbox
                 Graphics.Blit(Texture2D.blackTexture, historyWriteTexture, upscaleMaterial);
                 SwapHistoryTextures();
                 hasHistoryFrame = true;
+                previousViewProjectionMatrix = GetCurrentViewProjectionMatrix();
             }
         }
 
@@ -767,7 +841,7 @@ namespace RenderingSandbox
             debugRect.anchorMax = new Vector2(0f, 1f);
             debugRect.pivot = new Vector2(0f, 1f);
             debugRect.anchoredPosition = new Vector2(16f, -16f);
-            debugRect.sizeDelta = new Vector2(520f, 180f);
+            debugRect.sizeDelta = new Vector2(620f, 220f);
 
             Text debugText = debugObject.GetComponent<Text>();
             if (debugText == null)
